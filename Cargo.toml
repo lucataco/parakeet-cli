@@ -1,0 +1,81 @@
+[package]
+name = "parakeet-cli"
+version = "0.1.0"
+edition = "2024"
+description = "Local speech-to-text CLI powered by NVIDIA Parakeet TDT via ONNX Runtime"
+
+[dependencies]
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# ONNX Runtime with CoreML acceleration
+ort = { version = "2.0.0-rc.12", features = ["coreml"] }
+ndarray = "0.16"   # for our own code; ort uses 0.17 internally but re-exports it
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP downloads
+reqwest = { version = "0.12", features = ["stream"] }
+
+# Progress bars
+indicatif = "0.17"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+
+# File paths
+dirs = "6"
+
+# Futures utilities (for stream processing)
+futures-util = "0.3"
+
+# Audio file loading (WAV)
+hound = "3.5"
+
+# FFT for mel spectrogram
+realfft = "3"
+
+# Audio capture from microphone
+cpal = "0.15"
+
+# Thread-safe crossbeam channels (for audio callback -> main thread)
+crossbeam-channel = "0.5"
+
+# Ctrl-C handling
+ctrlc = "3.4"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "mel_spectrogram"
+harness = false
+
+[[bench]]
+name = "resampling"
+harness = false
+
+[[bench]]
+name = "encoder"
+harness = false
+
+[[bench]]
+name = "decoder"
+harness = false
+
+[[bench]]
+name = "vad"
+harness = false
+
+[[bench]]
+name = "end_to_end"
+harness = false
+
+[[bench]]
+name = "memory"
+harness = false
