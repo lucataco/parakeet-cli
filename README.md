@@ -1,22 +1,25 @@
 # parakeet-cli
 
-Local speech-to-text CLI powered by NVIDIA's Parakeet TDT 0.6B v2 model. Runs entirely on-device via ONNX Runtime — no cloud APIs, no network required after model download.
+Local speech-to-text CLI powered by NVIDIA's Parakeet TDT 0.6B v3 model. Runs entirely on-device via ONNX Runtime — no cloud APIs, no network required after model download.
 
 ## Features
 
-- **High accuracy** — NVIDIA Parakeet TDT 0.6B v2 (6.05% WER on LibriSpeech test-clean) with punctuation, capitalization, and timestamps
+- **High accuracy** — NVIDIA Parakeet TDT 0.6B v3 with punctuation, capitalization, and timestamps
+- **25 languages** — English, Spanish, French, German, Italian, Portuguese, Russian, Polish, Ukrainian, Czech, Slovak, Dutch, Swedish, Danish, Finnish, and more
 - **Fully local** — all inference runs on-device; audio never leaves your machine
-- **Fast** — ~50x realtime on Apple Silicon CPU
+- **Fast** — ~59x realtime on Apple Silicon CPU with FP16 quantization
+- **Small footprint** — 1.2 GB FP16 model (or 652 MB INT8)
 - **File transcription** — transcribe WAV files with text or JSON output
 - **Live microphone** — stream transcription from any audio input device with voice activity detection (Silero VAD v5)
 - **Daemon mode** — background service controllable via Unix socket or signals, designed for hotkey-triggered dictation (Hammerspoon, skhd, Karabiner)
 - **Clipboard output** — optional `--clipboard` flag pastes transcription directly
+- **CoreML support** — experimental CoreML acceleration via `--coreml` flag
 
 ## Requirements
 
-- **macOS on Apple Silicon** (M1/M2/M3/M4) — CPU inference is excellent; CoreML EP is attempted but falls back to CPU gracefully
+- **macOS on Apple Silicon** (M1/M2/M3/M4)
 - **Rust 1.80+** (edition 2024)
-- **~2.4 GB disk space** for model weights
+- **~1.3 GB disk space** for FP16 model weights (or ~670 MB for INT8)
 
 > Linux/Intel Mac may work with CPU-only inference but are untested.
 
@@ -37,7 +40,7 @@ cp target/release/parakeet-cli /usr/local/bin/parakeet
 ## Quick Start
 
 ```bash
-# 1. Download model weights (~2.4 GB)
+# 1. Download model weights (~1.3 GB FP16)
 parakeet download
 
 # 2. Transcribe a file
@@ -58,8 +61,8 @@ parakeet download [OPTIONS]
 
 Options:
   --model-dir <PATH>   Directory to store model files
-                        [default: ~/Library/Application Support/parakeet/models/parakeet-tdt-0.6b-v2]
-  --int8               Download INT8 quantized model (smaller, slightly less accurate)
+                        [default: ~/Library/Application Support/parakeet/models/parakeet-tdt-0.6b-v3]
+  --int8               Download INT8 quantized model (652 MB, smallest). Default is FP16 (1.2 GB).
 ```
 
 ### `parakeet transcribe`
@@ -73,6 +76,7 @@ Options:
   --model-dir <PATH>   Directory containing model files
   --format <FORMAT>    Output format: text, json [default: text]
   --timestamps         Include word-level timestamps (reserved for future use)
+  --coreml             Enable CoreML acceleration (experimental)
 ```
 
 Example with JSON output:
@@ -96,6 +100,7 @@ Options:
   --vad-threshold <F32>  VAD speech probability threshold, 0.0-1.0 [default: 0.5]
   --silence-ms <MS>      Silence duration in ms to end an utterance [default: 1500]
   --clipboard            Copy each transcription to clipboard (via pbcopy)
+  --coreml               Enable CoreML acceleration (experimental)
 ```
 
 Example with a specific microphone and tighter VAD:
@@ -117,6 +122,7 @@ Options:
   --device <NAME>      Audio input device
   --model-dir <PATH>   Directory containing model files
   --clipboard          Copy transcription to clipboard
+  --coreml             Enable CoreML acceleration (experimental)
 ```
 
 See [Daemon Mode](#daemon-mode) below for control commands and integration examples.
@@ -135,6 +141,17 @@ Audio input devices:
   MacBook Pro Microphone (default): 1ch, 48000Hz, F32
   External USB Mic: 2ch, 44100Hz, I16
 ```
+
+## Model Variants
+
+Two quantization levels are available, both based on Parakeet TDT 0.6B v3:
+
+| Variant | Encoder | Decoder | Total | Speed | Download |
+|---------|---------|---------|-------|-------|----------|
+| **FP16** (default) | 1.2 GB | 35 MB | ~1.3 GB | ~59x realtime | `parakeet download` |
+| **INT8** | 652 MB | 18 MB | ~670 MB | ~50x realtime | `parakeet download --int8` |
+
+Both variants are single-file ONNX models (no external data files). The model loader auto-detects which variant is present and prefers FP16 > INT8 > FP32 (legacy).
 
 ## Daemon Mode
 
@@ -217,7 +234,7 @@ echo "toggle" | nc -U /tmp/parakeet.sock
 src/
 ├── main.rs              # Entry point, command dispatch
 ├── cli.rs               # Clap CLI definitions
-├── download.rs          # HuggingFace model download
+├── download.rs          # HuggingFace model download (multi-repo)
 ├── listen.rs            # Live mic → VAD → transcribe pipeline
 ├── serve.rs             # Daemon mode (socket + signal control)
 ├── audio/
@@ -226,7 +243,7 @@ src/
 │   ├── capture.rs       # Mic capture via cpal (multi-format, multi-channel)
 │   └── buffer.rs        # Growable audio buffer for utterance accumulation
 ├── model/
-│   ├── encoder.rs       # ONNX encoder session (CoreML → CPU fallback)
+│   ├── encoder.rs       # ONNX encoder session (CoreML + CPU, external data preloading)
 │   ├── decoder.rs       # TDT greedy decoder with LSTM state management
 │   └── tokenizer.rs     # SentencePiece vocab, token ID → text
 └── vad/
@@ -252,22 +269,22 @@ Microphone → mono f32 chunks → resample to 16kHz
 
 ### Model Details
 
-| Component | File | Size |
-|-----------|------|------|
-| Encoder | `encoder-model.onnx` + `.data` | ~2.3 GB |
-| Decoder | `decoder_joint-model.onnx` | ~34 MB |
-| Tokenizer | `vocab.txt` (1025 tokens) | ~9 KB |
-| VAD | `silero_vad.onnx` (auto-downloaded) | ~2.3 MB |
+| Component | File (FP16) | Size |
+|-----------|-------------|------|
+| Encoder | `encoder-model.fp16.onnx` | 1.2 GB |
+| Decoder | `decoder_joint-model.fp16.onnx` | 35 MB |
+| Tokenizer | `vocab.txt` (8193 tokens, 25 languages) | 92 KB |
+| VAD | `silero_vad.onnx` (auto-downloaded) | 2.3 MB |
 
 - **Encoder input:** 128-bin mel features, 16kHz audio, 25ms window, 10ms hop
 - **Decoder:** TDT (Token-and-Duration Transducer) with greedy search and duration-based time stepping
-- **Tokenizer:** SentencePiece unigram, 1025 tokens including blank
+- **Tokenizer:** SentencePiece unigram, 8193 tokens (v3 multilingual) including blank
 
 ## Testing & Benchmarks
 
 ### Unit Tests
 
-Run the 22 unit tests (no model files required):
+Run the unit tests (no model files required):
 
 ```bash
 cargo test
@@ -313,16 +330,17 @@ HTML reports are generated in `target/criterion/` for regression tracking across
 
 ## Performance
 
-Benchmarked on Apple Silicon (M-series), CPU inference:
+Benchmarked on Apple Silicon (M-series), CPU inference with FP16 model:
 
 | Metric | Value |
 |--------|-------|
-| Inference speed | ~50x realtime |
+| Inference speed | ~59x realtime |
 | Model load time | ~1.1 seconds |
+| Download size | ~1.3 GB (FP16) |
 | Streaming latency | Utterance end + ~0.5s transcription |
 
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
 
-The NVIDIA Parakeet TDT model weights are subject to NVIDIA's license terms. The Silero VAD model is licensed under MIT.
+The NVIDIA Parakeet TDT model weights are subject to NVIDIA's [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/) license. The Silero VAD model is licensed under MIT.
