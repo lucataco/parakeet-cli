@@ -72,6 +72,7 @@ pub async fn run_listen(
     clipboard: bool,
     debug: bool,
     verbose: bool,
+    use_coreml: bool,
 ) -> Result<()> {
     // Download VAD model if needed
     let vad_path = vad::ensure_vad_model(model_dir).await?;
@@ -80,7 +81,7 @@ pub async fn run_listen(
     if verbose {
         eprintln!("Loading Parakeet model...");
     }
-    let mut model = ParakeetModel::load(model_dir, true, verbose)?;
+    let mut model = ParakeetModel::load(model_dir, use_coreml, verbose)?;
     if verbose {
         eprintln!();
     }

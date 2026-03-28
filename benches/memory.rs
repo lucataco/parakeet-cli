@@ -83,14 +83,11 @@ fn bench_memory_encoder(c: &mut Criterion) {
     let model_dir = common::default_model_dir();
     let config = MelConfig::default();
 
-    let encoder_path = if model_dir.join("encoder-model.onnx").exists() {
-        model_dir.join("encoder-model.onnx")
-    } else {
-        model_dir.join("encoder-model.int8.onnx")
-    };
-
-    let mut encoder = parakeet_cli::model::encoder::Encoder::load(&encoder_path, true, false)
-        .expect("Failed to load encoder");
+    let encoder_path = common::encoder_path();
+    let cache_dir = model_dir.join("coreml_cache");
+    let mut encoder =
+        parakeet_cli::model::encoder::Encoder::load(&encoder_path, false, false, Some(&cache_dir))
+            .expect("Failed to load encoder");
 
     let durations: &[(f32, &str)] = &[(1.0, "1s"), (10.0, "10s"), (30.0, "30s")];
 
@@ -133,7 +130,7 @@ fn bench_memory_full_pipeline(c: &mut Criterion) {
     let model_dir = common::default_model_dir();
     let config = MelConfig::default();
 
-    let mut model = parakeet_cli::model::ParakeetModel::load(&model_dir, true, false)
+    let mut model = parakeet_cli::model::ParakeetModel::load(&model_dir, false, false)
         .expect("Failed to load model");
 
     let durations: &[(f32, &str)] = &[(1.0, "1s"), (10.0, "10s"), (30.0, "30s")];

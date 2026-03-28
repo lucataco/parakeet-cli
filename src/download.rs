@@ -6,32 +6,70 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
-const HF_REPO: &str = "istupakov/parakeet-tdt-0.6b-v2-onnx";
 const HF_BASE_URL: &str = "https://huggingface.co";
 
-/// Files needed for the FP32 model
-const FP32_FILES: &[&str] = &[
-    "encoder-model.onnx",
-    "encoder-model.onnx.data",
-    "decoder_joint-model.onnx",
-    "vocab.txt",
-    "config.json",
+/// HuggingFace repo for FP16 quantized model files (v3).
+const HF_REPO_FP16: &str = "grikdotnet/parakeet-tdt-0.6b-fp16";
+
+/// HuggingFace repo for FP32/INT8 model files + vocab + config (v3).
+const HF_REPO_V3: &str = "istupakov/parakeet-tdt-0.6b-v3-onnx";
+
+/// Files needed for the FP16 model (default).
+/// Encoder + decoder come from the FP16 repo; vocab + config from the v3 repo.
+struct DownloadFile {
+    repo: &'static str,
+    filename: &'static str,
+}
+
+const FP16_FILES: &[DownloadFile] = &[
+    DownloadFile {
+        repo: HF_REPO_FP16,
+        filename: "encoder-model.fp16.onnx",
+    },
+    DownloadFile {
+        repo: HF_REPO_FP16,
+        filename: "decoder_joint-model.fp16.onnx",
+    },
+    DownloadFile {
+        repo: HF_REPO_V3,
+        filename: "vocab.txt",
+    },
+    DownloadFile {
+        repo: HF_REPO_V3,
+        filename: "config.json",
+    },
 ];
 
-/// Files needed for the INT8 quantized model
-const INT8_FILES: &[&str] = &[
-    "encoder-model.int8.onnx",
-    "decoder_joint-model.int8.onnx",
-    "vocab.txt",
-    "config.json",
+/// Files needed for the INT8 quantized model.
+const INT8_FILES: &[DownloadFile] = &[
+    DownloadFile {
+        repo: HF_REPO_V3,
+        filename: "encoder-model.int8.onnx",
+    },
+    DownloadFile {
+        repo: HF_REPO_V3,
+        filename: "decoder_joint-model.int8.onnx",
+    },
+    DownloadFile {
+        repo: HF_REPO_V3,
+        filename: "vocab.txt",
+    },
+    DownloadFile {
+        repo: HF_REPO_V3,
+        filename: "config.json",
+    },
 ];
 
 pub async fn download_model(model_dir: &Path, int8: bool) -> Result<()> {
-    let files = if int8 { INT8_FILES } else { FP32_FILES };
-    let variant = if int8 { "INT8 quantized" } else { "FP32" };
+    let files = if int8 { INT8_FILES } else { FP16_FILES };
+    let variant = if int8 { "INT8 quantized" } else { "FP16" };
 
-    println!("Downloading Parakeet TDT 0.6B v2 ({variant}) model...");
-    println!("Source: {HF_BASE_URL}/{HF_REPO}");
+    println!("Downloading Parakeet TDT 0.6B v3 ({variant}) model...");
+    if int8 {
+        println!("Source: {HF_BASE_URL}/{HF_REPO_V3}");
+    } else {
+        println!("Source: {HF_BASE_URL}/{HF_REPO_FP16}");
+    }
     println!("Destination: {}", model_dir.display());
     println!();
 
@@ -42,15 +80,15 @@ pub async fn download_model(model_dir: &Path, int8: bool) -> Result<()> {
 
     let client = Client::builder().user_agent("parakeet-cli/0.1.0").build()?;
 
-    for filename in files {
-        let dest_path = model_dir.join(filename);
+    for dl in files {
+        let dest_path = model_dir.join(dl.filename);
 
         if dest_path.exists() {
-            println!("[skip] {filename} (already exists)");
+            println!("[skip] {} (already exists)", dl.filename);
             continue;
         }
 
-        download_file(&client, filename, &dest_path).await?;
+        download_file(&client, dl.repo, dl.filename, &dest_path).await?;
     }
 
     // Write a marker file indicating which variant is downloaded
@@ -63,8 +101,13 @@ pub async fn download_model(model_dir: &Path, int8: bool) -> Result<()> {
     Ok(())
 }
 
-async fn download_file(client: &Client, filename: &str, dest_path: &Path) -> Result<()> {
-    let url = format!("{HF_BASE_URL}/{HF_REPO}/resolve/main/{filename}");
+async fn download_file(
+    client: &Client,
+    repo: &str,
+    filename: &str,
+    dest_path: &Path,
+) -> Result<()> {
+    let url = format!("{HF_BASE_URL}/{repo}/resolve/main/{filename}");
 
     let response = client
         .get(&url)
@@ -131,8 +174,18 @@ fn temp_path(path: &Path) -> PathBuf {
     tmp
 }
 
-/// Check if the model files exist at the given directory
-pub fn model_exists(model_dir: &Path, int8: bool) -> bool {
-    let files = if int8 { INT8_FILES } else { FP32_FILES };
-    files.iter().all(|f| model_dir.join(f).exists())
+/// Check if model files exist at the given directory.
+///
+/// Checks for FP16, INT8, or legacy FP32 files (in priority order).
+pub fn model_exists(model_dir: &Path) -> bool {
+    let has_fp16 = model_dir.join("encoder-model.fp16.onnx").exists()
+        && model_dir.join("decoder_joint-model.fp16.onnx").exists();
+    let has_int8 = model_dir.join("encoder-model.int8.onnx").exists()
+        && model_dir.join("decoder_joint-model.int8.onnx").exists();
+    let has_fp32 = model_dir.join("encoder-model.onnx").exists()
+        && model_dir.join("decoder_joint-model.onnx").exists();
+
+    (has_fp16 || has_int8 || has_fp32)
+        && model_dir.join("vocab.txt").exists()
+        && model_dir.join("config.json").exists()
 }

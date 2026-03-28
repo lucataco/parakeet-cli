@@ -39,22 +39,16 @@ fn bench_decoder_greedy(c: &mut Criterion) {
     }
 
     let model_dir = common::default_model_dir();
-
-    let encoder_path = if model_dir.join("encoder-model.onnx").exists() {
-        model_dir.join("encoder-model.onnx")
-    } else {
-        model_dir.join("encoder-model.int8.onnx")
-    };
-    let decoder_path = if model_dir.join("decoder_joint-model.onnx").exists() {
-        model_dir.join("decoder_joint-model.onnx")
-    } else {
-        model_dir.join("decoder_joint-model.int8.onnx")
-    };
+    let encoder_path = common::encoder_path();
+    let decoder_path = common::decoder_path();
     let vocab_path = model_dir.join("vocab.txt");
+    let cache_dir = model_dir.join("coreml_cache");
 
-    let mut encoder = Encoder::load(&encoder_path, true, false).expect("Failed to load encoder");
-    let mut decoder = TdtDecoder::load(&decoder_path, false).expect("Failed to load decoder");
+    let mut encoder = Encoder::load(&encoder_path, false, false, Some(&cache_dir))
+        .expect("Failed to load encoder");
     let tokenizer = Tokenizer::from_file(&vocab_path, false).expect("Failed to load tokenizer");
+    let mut decoder = TdtDecoder::load(&decoder_path, tokenizer.vocab_size(), false)
+        .expect("Failed to load decoder");
 
     let durations: &[(f32, &str)] = &[(1.0, "1s"), (5.0, "5s"), (10.0, "10s"), (30.0, "30s")];
 
@@ -89,22 +83,16 @@ fn bench_decoder_with_tokenizer(c: &mut Criterion) {
     }
 
     let model_dir = common::default_model_dir();
-
-    let encoder_path = if model_dir.join("encoder-model.onnx").exists() {
-        model_dir.join("encoder-model.onnx")
-    } else {
-        model_dir.join("encoder-model.int8.onnx")
-    };
-    let decoder_path = if model_dir.join("decoder_joint-model.onnx").exists() {
-        model_dir.join("decoder_joint-model.onnx")
-    } else {
-        model_dir.join("decoder_joint-model.int8.onnx")
-    };
+    let encoder_path = common::encoder_path();
+    let decoder_path = common::decoder_path();
     let vocab_path = model_dir.join("vocab.txt");
+    let cache_dir = model_dir.join("coreml_cache");
 
-    let mut encoder = Encoder::load(&encoder_path, true, false).expect("Failed to load encoder");
-    let mut decoder = TdtDecoder::load(&decoder_path, false).expect("Failed to load decoder");
+    let mut encoder = Encoder::load(&encoder_path, false, false, Some(&cache_dir))
+        .expect("Failed to load encoder");
     let tokenizer = Tokenizer::from_file(&vocab_path, false).expect("Failed to load tokenizer");
+    let mut decoder = TdtDecoder::load(&decoder_path, tokenizer.vocab_size(), false)
+        .expect("Failed to load decoder");
 
     // Measure decoder + tokenizer combined for 10s audio
     let enc_out = prepare_encoder_output(&mut encoder, 10.0);

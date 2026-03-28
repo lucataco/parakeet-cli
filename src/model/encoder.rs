@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
+use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::Tensor;
+use std::borrow::Cow;
 use std::path::Path;
 
 /// FastConformer encoder for Parakeet TDT.
@@ -13,10 +15,19 @@ pub struct Encoder {
 
 impl Encoder {
     /// Load the encoder ONNX model with the given execution providers.
-    pub fn load(path: &Path, use_coreml: bool, verbose: bool) -> Result<Self> {
+    ///
+    /// When `use_coreml` is true, the encoder is loaded with an aggressively
+    /// tuned CoreML execution provider targeting the Apple Neural Engine,
+    /// with compiled-model caching for fast subsequent loads.
+    pub fn load(
+        path: &Path,
+        use_coreml: bool,
+        verbose: bool,
+        cache_dir: Option<&Path>,
+    ) -> Result<Self> {
         let session = if use_coreml {
             // Try CoreML first, fall back to CPU if it fails
-            match Self::try_load_with_coreml(path) {
+            match Self::try_load_with_coreml(path, verbose, cache_dir) {
                 Ok(s) => {
                     if verbose {
                         println!("Encoder loaded with CoreML execution provider");
@@ -48,18 +59,134 @@ impl Encoder {
         Ok(Self { session })
     }
 
-    fn try_load_with_coreml(path: &Path) -> std::result::Result<Session, String> {
+    fn try_load_with_coreml(
+        path: &Path,
+        verbose: bool,
+        cache_dir: Option<&Path>,
+    ) -> std::result::Result<Session, String> {
+        // CoreML execution provider configuration.
+        //
+        // ComputeUnits::All lets CoreML dispatch to ANE + GPU + CPU.
+        // FP16 models are natively supported by Apple Silicon's ANE,
+        // which should provide significant speedups over CPU-only inference.
+        //
+        // NeuralNetwork format (default, CoreML 3+) is used instead of
+        // MLProgram because the encoder has dynamic time dimensions that
+        // cause MLProgram compilation to fail with error code -14.
+        //
+        // ModelCacheDirectory caches the compiled CoreML model on disk
+        // so subsequent session loads skip the ONNX->CoreML compilation.
+        let mut ep = ort::ep::CoreML::default()
+            .with_subgraphs(true)
+            .with_compute_units(ort::ep::coreml::ComputeUnits::All);
+
+        if let Some(dir) = cache_dir {
+            std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create cache dir: {e}"))?;
+            let cache_path = dir.to_string_lossy().to_string();
+            if verbose {
+                println!("CoreML model cache directory: {cache_path}");
+            }
+            ep = ep.with_model_cache_dir(cache_path);
+        }
+
         let builder = Session::builder().map_err(|e| e.to_string())?;
+
+        // If the model uses external data (e.g. encoder-model.onnx.data),
+        // pre-load it into memory so ONNX Runtime can resolve the external
+        // tensor references without filesystem path issues. The CoreML EP
+        // has a known bug where it misresolves external data file paths,
+        // treating the .onnx file as a directory. Pre-loading via
+        // with_external_initializer_file_in_memory() bypasses this entirely.
+        let builder = Self::preload_external_data(builder, path, verbose)?;
+
+        // Session-level optimizations
+        let builder = builder
+            .with_execution_providers([ep.build()])
+            .map_err(|e| e.to_string())?;
+        let builder = builder
+            .with_optimization_level(GraphOptimizationLevel::All)
+            .map_err(|e| e.to_string())?;
         let mut builder = builder
-            .with_execution_providers([ort::ep::CoreML::default().with_subgraphs(true).build()])
+            .with_memory_pattern(true)
             .map_err(|e| e.to_string())?;
 
         let session = builder.commit_from_file(path).map_err(|e| e.to_string())?;
         Ok(session)
     }
 
+    /// Pre-load external data files into memory for the session builder.
+    ///
+    /// ONNX models with external data store their weights in a separate
+    /// file (e.g. `encoder-model.onnx.data`). The ONNX Runtime CoreML EP
+    /// has path resolution issues with these files. By reading the data
+    /// into memory and registering it with `with_external_initializer_file_in_memory`,
+    /// we let ONNX Runtime access the weights without touching the filesystem.
+    fn preload_external_data(
+        builder: ort::session::builder::SessionBuilder,
+        model_path: &Path,
+        verbose: bool,
+    ) -> std::result::Result<ort::session::builder::SessionBuilder, String> {
+        // The external data file is typically named <model>.data
+        // e.g. encoder-model.onnx -> encoder-model.onnx.data
+        let data_filename = format!(
+            "{}.data",
+            model_path.file_name().unwrap_or_default().to_string_lossy()
+        );
+        let data_path = model_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join(&data_filename);
+
+        if !data_path.exists() {
+            // No external data file -- model has embedded weights, nothing to do
+            if verbose {
+                println!("No external data file found, model has embedded weights");
+            }
+            return Ok(builder);
+        }
+
+        let file_size = std::fs::metadata(&data_path)
+            .map_err(|e| format!("Failed to stat external data file: {e}"))?
+            .len();
+
+        if verbose {
+            println!(
+                "Pre-loading external data: {} ({:.2} GB)",
+                data_path.display(),
+                file_size as f64 / (1024.0 * 1024.0 * 1024.0)
+            );
+        }
+
+        let data = std::fs::read(&data_path)
+            .map_err(|e| format!("Failed to read external data file: {e}"))?;
+
+        if verbose {
+            println!(
+                "External data loaded into memory ({:.2} GB)",
+                data.len() as f64 / (1024.0 * 1024.0 * 1024.0)
+            );
+        }
+
+        let builder = builder
+            .with_external_initializer_file_in_memory(&data_filename, Cow::Owned(data))
+            .map_err(|e| e.to_string())?;
+
+        Ok(builder)
+    }
+
     fn load_cpu(path: &Path, verbose: bool) -> Result<Session> {
-        let mut builder = Session::builder().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let builder = Session::builder().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let builder = builder
+            .with_optimization_level(GraphOptimizationLevel::All)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut builder = builder
+            .with_memory_pattern(true)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        // CPU-only path: let ONNX Runtime use its default thread count
+        // (all logical cores). The encoder's large matrix multiplications
+        // benefit from maximum parallelism, even on efficiency cores.
+
         let session = builder
             .commit_from_file(path)
             .map_err(|e| anyhow::anyhow!("{e}"))

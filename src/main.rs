@@ -18,11 +18,10 @@ async fn main() -> Result<()> {
             model_dir,
             timestamps,
             format,
+            coreml,
         } => {
             // Verify model exists
-            if !download::model_exists(&model_dir, false)
-                && !download::model_exists(&model_dir, true)
-            {
+            if !download::model_exists(&model_dir) {
                 eprintln!(
                     "Model not found at: {}\nRun `parakeet download` first.",
                     model_dir.display()
@@ -60,7 +59,7 @@ async fn main() -> Result<()> {
 
             // Load model
             let start_model = std::time::Instant::now();
-            let mut model = model::ParakeetModel::load(&model_dir, true, verbose)?;
+            let mut model = model::ParakeetModel::load(&model_dir, coreml, verbose)?;
             if verbose {
                 println!(
                     "Model loaded in {:.2}s",
@@ -110,11 +109,10 @@ async fn main() -> Result<()> {
             silence_ms,
             clipboard,
             debug,
+            coreml,
         } => {
             // Verify model exists
-            if !download::model_exists(&model_dir, false)
-                && !download::model_exists(&model_dir, true)
-            {
+            if !download::model_exists(&model_dir) {
                 eprintln!(
                     "Model not found at: {}\nRun `parakeet download` first.",
                     model_dir.display()
@@ -130,6 +128,7 @@ async fn main() -> Result<()> {
                 clipboard,
                 debug,
                 verbose,
+                coreml,
             )
             .await?;
         }
@@ -140,11 +139,10 @@ async fn main() -> Result<()> {
             device,
             model_dir,
             clipboard,
+            coreml,
         } => {
             // Verify model exists
-            if !download::model_exists(&model_dir, false)
-                && !download::model_exists(&model_dir, true)
-            {
+            if !download::model_exists(&model_dir) {
                 eprintln!(
                     "Model not found at: {}\nRun `parakeet download` first.",
                     model_dir.display()
@@ -152,7 +150,7 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
 
-            serve::run_serve(&socket, &pid_file, &device, &model_dir, clipboard, verbose).await?;
+            serve::run_serve(&socket, &pid_file, &device, &model_dir, clipboard, verbose, coreml).await?;
         }
 
         Commands::Devices => {

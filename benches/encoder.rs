@@ -1,6 +1,6 @@
 /// Benchmarks for the ONNX encoder inference.
 ///
-/// This is the most expensive stage of the pipeline (~2.3 GB model).
+/// This is the most expensive stage of the pipeline.
 /// Benchmarks measure wall-clock time and realtime factor for
 /// various audio durations.
 ///
@@ -19,16 +19,11 @@ fn bench_encoder_inference(c: &mut Criterion) {
     }
 
     let model_dir = common::default_model_dir();
+    let encoder_path = common::encoder_path();
+    let cache_dir = model_dir.join("coreml_cache");
 
-    // Load encoder once (outside the timed region)
-    let encoder_path = if model_dir.join("encoder-model.onnx").exists() {
-        model_dir.join("encoder-model.onnx")
-    } else {
-        model_dir.join("encoder-model.int8.onnx")
-    };
-
-    let mut encoder =
-        Encoder::load(&encoder_path, true, false).expect("Failed to load encoder for benchmarks");
+    let mut encoder = Encoder::load(&encoder_path, false, false, Some(&cache_dir))
+        .expect("Failed to load encoder for benchmarks");
 
     let config = MelConfig::default();
 
@@ -59,14 +54,11 @@ fn bench_encoder_throughput(c: &mut Criterion) {
     }
 
     let model_dir = common::default_model_dir();
-    let encoder_path = if model_dir.join("encoder-model.onnx").exists() {
-        model_dir.join("encoder-model.onnx")
-    } else {
-        model_dir.join("encoder-model.int8.onnx")
-    };
+    let encoder_path = common::encoder_path();
+    let cache_dir = model_dir.join("coreml_cache");
 
-    let mut encoder =
-        Encoder::load(&encoder_path, true, false).expect("Failed to load encoder for benchmarks");
+    let mut encoder = Encoder::load(&encoder_path, false, false, Some(&cache_dir))
+        .expect("Failed to load encoder for benchmarks");
 
     let config = MelConfig::default();
 

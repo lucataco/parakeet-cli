@@ -245,6 +245,7 @@ pub async fn run_serve(
     model_dir: &Path,
     clipboard: bool,
     verbose: bool,
+    use_coreml: bool,
 ) -> Result<()> {
     // Write PID file (cleaned up on drop)
     let _pid_guard = PidFile::create(pid_file_path)?;
@@ -254,7 +255,7 @@ pub async fn run_serve(
 
     // Load Parakeet model
     eprintln!("[daemon] Loading Parakeet model...");
-    let mut model = ParakeetModel::load(model_dir, true, verbose)?;
+    let mut model = ParakeetModel::load(model_dir, use_coreml, verbose)?;
     eprintln!();
 
     // Load Silero VAD

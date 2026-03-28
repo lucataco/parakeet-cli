@@ -6,8 +6,9 @@ use std::path::PathBuf;
     name = "parakeet",
     version,
     about = "Local speech-to-text powered by NVIDIA Parakeet TDT",
-    long_about = "A fast, local speech-to-text CLI using NVIDIA's Parakeet TDT 0.6B model.\n\
-                  Runs entirely on-device via ONNX Runtime with CoreML acceleration on Apple Silicon."
+    long_about = "A fast, local speech-to-text CLI using NVIDIA's Parakeet TDT 0.6B v3 model.\n\
+                  Supports 25 languages. Runs entirely on-device via ONNX Runtime.\n\
+                  FP16 quantized by default for optimal speed on Apple Silicon."
 )]
 pub struct Cli {
     /// Enable verbose output (model details, tensor shapes, timing stats)
@@ -26,7 +27,7 @@ pub enum Commands {
         #[arg(long, default_value_os_t = default_model_dir())]
         model_dir: PathBuf,
 
-        /// Download INT8 quantized model (smaller, slightly less accurate)
+        /// Download INT8 quantized model (652 MB, smallest). Default is FP16 (1.2 GB).
         #[arg(long)]
         int8: bool,
     },
@@ -47,6 +48,10 @@ pub enum Commands {
         /// Output format
         #[arg(long, default_value = "text", value_parser = ["text", "json", "srt"])]
         format: String,
+
+        /// Enable CoreML acceleration (experimental, may be slower with FP32 models)
+        #[arg(long)]
+        coreml: bool,
     },
 
     /// Stream transcription from microphone
@@ -74,6 +79,10 @@ pub enum Commands {
         /// Print debug info: audio levels, VAD probabilities, state transitions
         #[arg(long)]
         debug: bool,
+
+        /// Enable CoreML acceleration (experimental, may be slower with FP32 models)
+        #[arg(long)]
+        coreml: bool,
     },
 
     /// Run as a daemon controllable via Unix socket or signals
@@ -97,6 +106,10 @@ pub enum Commands {
         /// Copy transcription to clipboard
         #[arg(long)]
         clipboard: bool,
+
+        /// Enable CoreML acceleration (experimental, may be slower with FP32 models)
+        #[arg(long)]
+        coreml: bool,
     },
 
     /// List available audio input devices
@@ -108,5 +121,5 @@ fn default_model_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("parakeet")
         .join("models")
-        .join("parakeet-tdt-0.6b-v2")
+        .join("parakeet-tdt-0.6b-v3")
 }

@@ -9,10 +9,12 @@ use std::path::Path;
 /// hidden states across decoding steps. The joint network combines
 /// encoder and prediction outputs to produce token + duration logits.
 ///
-/// Output shape is [B, T, U, 1030] where 1030 = 1025 vocab + 5 durations.
+/// Output shape is [B, T, U, vocab_size + num_durations].
+/// For v2 (English): 1025 + 5 = 1030
+/// For v3 (multilingual): 8193 + 5 = 8198
 pub struct TdtDecoder {
     session: Session,
-    /// Vocab size (1025 including blank)
+    /// Vocab size (including blank token)
     vocab_size: usize,
     /// Number of duration classes (5: 0, 1, 2, 3, 4)
     num_durations: usize,
@@ -22,7 +24,13 @@ pub struct TdtDecoder {
 
 impl TdtDecoder {
     /// Load the decoder_joint ONNX model.
-    pub fn load(path: &Path, verbose: bool) -> Result<Self> {
+    ///
+    /// `vocab_size` should match the tokenizer's vocab size (including
+    /// the blank token). This is used to split the decoder output into
+    /// token logits and duration logits.
+    ///
+    /// CPU only -- the decoder is small and autoregressive.
+    pub fn load(path: &Path, vocab_size: usize, verbose: bool) -> Result<Self> {
         let mut builder = Session::builder().map_err(|e| anyhow::anyhow!("{e}"))?;
         let session = builder
             .commit_from_file(path)
@@ -31,7 +39,7 @@ impl TdtDecoder {
 
         // Log model info
         if verbose {
-            println!("Decoder loaded:");
+            println!("Decoder loaded (vocab_size={vocab_size}):");
             for input in session.inputs() {
                 println!("  input: {} {:?}", input.name(), input.dtype());
             }
@@ -42,7 +50,7 @@ impl TdtDecoder {
 
         Ok(Self {
             session,
-            vocab_size: 1025,
+            vocab_size,
             num_durations: 5,
             lstm_hidden: 640,
         })

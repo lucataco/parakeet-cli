@@ -29,9 +29,12 @@ pub struct ParakeetModel {
 impl ParakeetModel {
     /// Load the complete model from a directory.
     ///
+    /// Detects model variant automatically in priority order:
+    /// FP16 > INT8 > FP32 (legacy).
+    ///
     /// Expects the directory to contain:
-    /// - encoder-model.onnx (+ .data file)
-    /// - decoder_joint-model.onnx
+    /// - encoder model (one of: .fp16.onnx, .int8.onnx, .onnx)
+    /// - decoder model (matching variant)
     /// - vocab.txt
     /// - config.json
     pub fn load(model_dir: &Path, use_coreml: bool, verbose: bool) -> Result<Self> {
@@ -51,25 +54,28 @@ impl ParakeetModel {
             println!("Model config: {config:?}");
         }
 
-        // Detect whether INT8 or FP32 files are present
-        let has_fp32 = model_dir.join("encoder-model.onnx").exists();
+        // Detect model variant: FP16 > INT8 > FP32 (legacy)
+        let has_fp16 = model_dir.join("encoder-model.fp16.onnx").exists();
         let has_int8 = model_dir.join("encoder-model.int8.onnx").exists();
+        let has_fp32 = model_dir.join("encoder-model.onnx").exists();
 
-        let (encoder_path, decoder_path) = if has_fp32 {
-            if verbose {
-                println!("Using FP32 model");
-            }
+        let (encoder_path, decoder_path, variant) = if has_fp16 {
             (
-                model_dir.join("encoder-model.onnx"),
-                model_dir.join("decoder_joint-model.onnx"),
+                model_dir.join("encoder-model.fp16.onnx"),
+                model_dir.join("decoder_joint-model.fp16.onnx"),
+                "FP16",
             )
         } else if has_int8 {
-            if verbose {
-                println!("Using INT8 quantized model");
-            }
             (
                 model_dir.join("encoder-model.int8.onnx"),
                 model_dir.join("decoder_joint-model.int8.onnx"),
+                "INT8",
+            )
+        } else if has_fp32 {
+            (
+                model_dir.join("encoder-model.onnx"),
+                model_dir.join("decoder_joint-model.onnx"),
+                "FP32 (legacy)",
             )
         } else {
             anyhow::bail!(
@@ -78,21 +84,32 @@ impl ParakeetModel {
             );
         };
 
-        // Load tokenizer
+        if verbose {
+            println!("Using {variant} model");
+        }
+
+        // Load tokenizer first -- we need vocab_size for the decoder
         let vocab_path = model_dir.join("vocab.txt");
         let tokenizer = Tokenizer::from_file(&vocab_path, verbose)?;
+        let vocab_size = tokenizer.vocab_size();
 
-        // Load encoder (with CoreML if available)
+        // Load encoder (with CoreML if requested)
+        let coreml_cache = if use_coreml {
+            Some(model_dir.join("coreml_cache"))
+        } else {
+            None
+        };
+
         if verbose {
             println!();
         }
-        let encoder = Encoder::load(&encoder_path, use_coreml, verbose)?;
+        let encoder = Encoder::load(&encoder_path, use_coreml, verbose, coreml_cache.as_deref())?;
 
-        // Load decoder (CPU only — decoder is small and autoregressive)
+        // Load decoder (CPU only -- decoder is small and autoregressive)
         if verbose {
             println!();
         }
-        let decoder = TdtDecoder::load(&decoder_path, verbose)?;
+        let decoder = TdtDecoder::load(&decoder_path, vocab_size, verbose)?;
 
         if verbose {
             println!();
