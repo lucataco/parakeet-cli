@@ -5,8 +5,8 @@
 /// model dependencies.
 mod common;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use parakeet_cli::audio::resample::{resample_linear, stereo_to_mono, StreamingResampler};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use parakeet_cli::audio::resample::{StreamingResampler, resample_linear, stereo_to_mono};
 
 fn bench_resample_one_shot(c: &mut Criterion) {
     let mut group = c.benchmark_group("resample_one_shot_48k_to_16k");

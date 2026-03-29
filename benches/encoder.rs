@@ -8,8 +8,8 @@
 /// Benchmarks are skipped gracefully if the model is not present.
 mod common;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use parakeet_cli::audio::{compute_mel_spectrogram, MelConfig};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use parakeet_cli::audio::{MelConfig, compute_mel_spectrogram};
 use parakeet_cli::model::encoder::Encoder;
 
 fn bench_encoder_inference(c: &mut Criterion) {

@@ -133,7 +133,9 @@ impl ParakeetModel {
     pub fn transcribe(&mut self, features: &Array2<f32>) -> Result<String> {
         // Run encoder
         let (enc_output, enc_shape, lengths) = self.encoder.encode(features)?;
-        let encoded_length = lengths[0];
+        let encoded_length = *lengths
+            .first()
+            .context("Encoder returned no output lengths")?;
 
         // Run TDT greedy decoding
         let token_ids = self.decoder.decode_greedy(

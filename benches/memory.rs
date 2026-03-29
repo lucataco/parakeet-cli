@@ -8,8 +8,8 @@
 /// Requires model files for encoder/decoder memory tests.
 mod common;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use parakeet_cli::audio::{compute_mel_spectrogram, MelConfig};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use parakeet_cli::audio::{MelConfig, compute_mel_spectrogram};
 
 fn bench_memory_mel(c: &mut Criterion) {
     let config = MelConfig::default();

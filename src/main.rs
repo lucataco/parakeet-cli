@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
-use parakeet_cli::{audio, cli, download, listen, model, serve};
 use cli::{Cli, Commands};
+use parakeet_cli::{audio, cli, download, listen, model, serve};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -16,7 +16,6 @@ async fn main() -> Result<()> {
         Commands::Transcribe {
             file,
             model_dir,
-            timestamps,
             format,
             coreml,
         } => {
@@ -98,8 +97,6 @@ async fn main() -> Result<()> {
                     audio_duration / infer_time
                 );
             }
-
-            let _ = timestamps; // TODO: word-level timestamps from TDT durations
         }
 
         Commands::Listen {
@@ -150,7 +147,10 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
 
-            serve::run_serve(&socket, &pid_file, &device, &model_dir, clipboard, verbose, coreml).await?;
+            serve::run_serve(
+                &socket, &pid_file, &device, &model_dir, clipboard, verbose, coreml,
+            )
+            .await?;
         }
 
         Commands::Devices => {

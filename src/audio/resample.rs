@@ -179,10 +179,27 @@ pub fn load_wav_file(path: &std::path::Path, verbose: bool) -> Result<Vec<f32>> 
             let max_val = (1u32 << (spec.bits_per_sample - 1)) as f32;
             reader
                 .into_samples::<i32>()
-                .map(|s| s.unwrap() as f32 / max_val)
-                .collect()
+                .map(|s| {
+                    s.map(|sample| sample as f32 / max_val).with_context(|| {
+                        format!(
+                            "Failed to decode PCM samples from WAV file: {}",
+                            path.display()
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?
         }
-        hound::SampleFormat::Float => reader.into_samples::<f32>().map(|s| s.unwrap()).collect(),
+        hound::SampleFormat::Float => reader
+            .into_samples::<f32>()
+            .map(|s| {
+                s.with_context(|| {
+                    format!(
+                        "Failed to decode float samples from WAV file: {}",
+                        path.display()
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
     };
 
     // Convert to mono

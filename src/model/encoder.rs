@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
+use ort::session::builder::GraphOptimizationLevel;
 use ort::value::Tensor;
 use std::borrow::Cow;
 use std::path::Path;

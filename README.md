@@ -4,7 +4,7 @@ Local speech-to-text CLI powered by NVIDIA's Parakeet TDT 0.6B v3 model. Runs en
 
 ## Features
 
-- **High accuracy** — NVIDIA Parakeet TDT 0.6B v3 with punctuation, capitalization, and timestamps
+- **High accuracy** — NVIDIA Parakeet TDT 0.6B v3 with punctuation and capitalization
 - **25 languages** — English, Spanish, French, German, Italian, Portuguese, Russian, Polish, Ukrainian, Czech, Slovak, Dutch, Swedish, Danish, Finnish, and more
 - **Fully local** — all inference runs on-device; audio never leaves your machine
 - **Fast** — ~59x realtime on Apple Silicon CPU with FP16 quantization
@@ -18,7 +18,7 @@ Local speech-to-text CLI powered by NVIDIA's Parakeet TDT 0.6B v3 model. Runs en
 ## Requirements
 
 - **macOS on Apple Silicon** (M1/M2/M3/M4)
-- **Rust 1.80+** (edition 2024)
+- **Rust 1.85+** (edition 2024)
 - **~1.3 GB disk space** for FP16 model weights (or ~670 MB for INT8)
 
 > Linux/Intel Mac may work with CPU-only inference but are untested.
@@ -28,13 +28,13 @@ Local speech-to-text CLI powered by NVIDIA's Parakeet TDT 0.6B v3 model. Runs en
 ```bash
 git clone https://github.com/lucataco/parakeet-cli.git
 cd parakeet-cli
-cargo build --release
+cargo build --release --bin parakeet
 ```
 
-The binary is at `target/release/parakeet-cli`. Optionally copy it to your PATH:
+The binary is at `target/release/parakeet`. Optionally copy it to your PATH:
 
 ```bash
-cp target/release/parakeet-cli /usr/local/bin/parakeet
+cp target/release/parakeet /usr/local/bin/parakeet
 ```
 
 ## Quick Start
@@ -67,7 +67,7 @@ Options:
 
 ### `parakeet transcribe`
 
-Transcribe an audio file (WAV format, any sample rate — automatically resampled to 16kHz).
+Transcribe a WAV audio file (any sample rate — automatically resampled to 16kHz).
 
 ```
 parakeet transcribe <FILE> [OPTIONS]
@@ -75,7 +75,6 @@ parakeet transcribe <FILE> [OPTIONS]
 Options:
   --model-dir <PATH>   Directory containing model files
   --format <FORMAT>    Output format: text, json [default: text]
-  --timestamps         Include word-level timestamps (reserved for future use)
   --coreml             Enable CoreML acceleration (experimental)
 ```
 
@@ -117,8 +116,8 @@ Run as a background daemon controllable via Unix socket or Unix signals. Designe
 parakeet serve [OPTIONS]
 
 Options:
-  --socket <PATH>      Unix socket path [default: /tmp/parakeet.sock]
-  --pid-file <PATH>    PID file path [default: /tmp/parakeet.pid]
+  --socket <PATH>      Unix socket path [default: ~/Library/Application Support/parakeet/run/daemon.sock]
+  --pid-file <PATH>    PID file path [default: ~/Library/Application Support/parakeet/run/daemon.pid]
   --device <NAME>      Audio input device
   --model-dir <PATH>   Directory containing model files
   --clipboard          Copy transcription to clipboard
@@ -159,29 +158,36 @@ The `serve` command starts a background process that loads the model once and wa
 
 ### Socket Commands
 
-Send commands to `/tmp/parakeet.sock` as plain text or JSON:
+By default the daemon uses a private per-user runtime directory. For shell examples below:
+
+```bash
+PARAKEET_SOCKET="$HOME/Library/Application Support/parakeet/run/daemon.sock"
+PARAKEET_PID="$HOME/Library/Application Support/parakeet/run/daemon.pid"
+```
+
+Send commands to `$PARAKEET_SOCKET` as plain text or JSON:
 
 ```bash
 # Toggle recording on/off
-echo "toggle" | nc -U /tmp/parakeet.sock
+echo "toggle" | nc -U "$PARAKEET_SOCKET"
 
 # Start recording
-echo "start" | nc -U /tmp/parakeet.sock
+echo "start" | nc -U "$PARAKEET_SOCKET"
 
 # Stop recording and transcribe
-echo "stop" | nc -U /tmp/parakeet.sock
+echo "stop" | nc -U "$PARAKEET_SOCKET"
 
 # Check daemon status
-echo "status" | nc -U /tmp/parakeet.sock
+echo "status" | nc -U "$PARAKEET_SOCKET"
 
 # Shut down the daemon
-echo "shutdown" | nc -U /tmp/parakeet.sock
+echo "shutdown" | nc -U "$PARAKEET_SOCKET"
 ```
 
 JSON format is also accepted:
 
 ```bash
-echo '{"command":"toggle"}' | nc -U /tmp/parakeet.sock
+echo '{"command":"toggle"}' | nc -U "$PARAKEET_SOCKET"
 ```
 
 ### Signal Control
@@ -194,10 +200,10 @@ echo '{"command":"toggle"}' | nc -U /tmp/parakeet.sock
 
 ```bash
 # Toggle via signal (using PID file)
-kill -USR1 $(cat /tmp/parakeet.pid)
+kill -USR1 $(cat "$PARAKEET_PID")
 
 # Stop recording
-kill -USR2 $(cat /tmp/parakeet.pid)
+kill -USR2 $(cat "$PARAKEET_PID")
 ```
 
 ### Integration Examples
@@ -209,7 +215,7 @@ Bind a hotkey to toggle dictation:
 ```lua
 -- ~/.hammerspoon/init.lua
 hs.hotkey.bind({"cmd", "shift"}, "D", function()
-    hs.execute("echo toggle | nc -U /tmp/parakeet.sock", true)
+    hs.execute("echo toggle | nc -U \"$HOME/Library/Application Support/parakeet/run/daemon.sock\"", true)
 end)
 ```
 
@@ -217,7 +223,7 @@ end)
 
 ```
 # ~/.skhdrc
-cmd + shift - d : echo "toggle" | nc -U /tmp/parakeet.sock
+cmd + shift - d : echo "toggle" | nc -U "$HOME/Library/Application Support/parakeet/run/daemon.sock"
 ```
 
 #### Karabiner-Elements
@@ -225,7 +231,7 @@ cmd + shift - d : echo "toggle" | nc -U /tmp/parakeet.sock
 Use a complex modification to map a key to:
 
 ```bash
-echo "toggle" | nc -U /tmp/parakeet.sock
+echo "toggle" | nc -U "$HOME/Library/Application Support/parakeet/run/daemon.sock"
 ```
 
 ## Architecture

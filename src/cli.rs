@@ -34,19 +34,15 @@ pub enum Commands {
 
     /// Transcribe an audio file
     Transcribe {
-        /// Path to the audio file (WAV or FLAC)
+        /// Path to the audio file (WAV)
         file: PathBuf,
 
         /// Directory containing model files
         #[arg(long, default_value_os_t = default_model_dir())]
         model_dir: PathBuf,
 
-        /// Include word-level timestamps
-        #[arg(long)]
-        timestamps: bool,
-
         /// Output format
-        #[arg(long, default_value = "text", value_parser = ["text", "json", "srt"])]
+        #[arg(long, default_value = "text", value_parser = ["text", "json"])]
         format: String,
 
         /// Enable CoreML acceleration (experimental, may be slower with FP32 models)
@@ -88,11 +84,11 @@ pub enum Commands {
     /// Run as a daemon controllable via Unix socket or signals
     Serve {
         /// Path to the Unix socket
-        #[arg(long, default_value = "/tmp/parakeet.sock")]
+        #[arg(long, default_value_os_t = default_socket_path())]
         socket: PathBuf,
 
         /// Path to write PID file
-        #[arg(long, default_value = "/tmp/parakeet.pid")]
+        #[arg(long, default_value_os_t = default_pid_file_path())]
         pid_file: PathBuf,
 
         /// Audio input device name
@@ -122,4 +118,19 @@ fn default_model_dir() -> PathBuf {
         .join("parakeet")
         .join("models")
         .join("parakeet-tdt-0.6b-v3")
+}
+
+fn default_runtime_dir() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("parakeet")
+        .join("run")
+}
+
+fn default_socket_path() -> PathBuf {
+    default_runtime_dir().join("daemon.sock")
+}
+
+fn default_pid_file_path() -> PathBuf {
+    default_runtime_dir().join("daemon.pid")
 }

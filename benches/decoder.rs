@@ -7,8 +7,8 @@
 /// Requires model files to be downloaded (`parakeet download`).
 mod common;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use parakeet_cli::audio::{compute_mel_spectrogram, MelConfig};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use parakeet_cli::audio::{MelConfig, compute_mel_spectrogram};
 use parakeet_cli::model::decoder::TdtDecoder;
 use parakeet_cli::model::encoder::Encoder;
 use parakeet_cli::model::tokenizer::Tokenizer;

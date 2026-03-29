@@ -1,7 +1,7 @@
 /// Daemon mode for hotkey-triggered dictation.
 ///
 /// The daemon pre-loads all models, then waits for commands via:
-/// - Unix socket at /tmp/parakeet.sock (JSON protocol)
+/// - Unix socket in the per-user runtime directory (JSON protocol)
 /// - Unix signals: SIGUSR1=toggle recording, SIGUSR2=stop recording
 ///
 /// When recording is triggered, the daemon captures audio from the mic,
@@ -9,9 +9,12 @@
 /// and optionally to the clipboard.
 ///
 /// Designed for integration with Hammerspoon, Karabiner, or skhd:
-///   skhd: `ctrl - r : echo '{"command":"toggle"}' | nc -U /tmp/parakeet.sock`
-///   signal: `kill -USR1 $(cat /tmp/parakeet.pid)`
+///   skhd: `ctrl - r : echo '{"command":"toggle"}' | nc -U "$HOME/Library/Application Support/parakeet/run/daemon.sock"`
+///   signal: `kill -USR1 $(cat "$HOME/Library/Application Support/parakeet/run/daemon.pid")`
 use anyhow::{Context, Result};
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -48,9 +51,26 @@ struct PidFile {
 
 impl PidFile {
     fn create(path: &Path) -> Result<Self> {
+        ensure_runtime_parent(path)?;
+
         let pid = std::process::id();
-        std::fs::write(path, pid.to_string())
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .with_context(|| {
+                format!(
+                    "Failed to create PID file {}. Remove it if another daemon is not running.",
+                    path.display()
+                )
+            })?;
+        file.write_all(pid.to_string().as_bytes())
             .with_context(|| format!("Failed to write PID file: {}", path.display()))?;
+        file.sync_all()
+            .with_context(|| format!("Failed to sync PID file: {}", path.display()))?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).with_context(
+            || format!("Failed to secure PID file permissions: {}", path.display()),
+        )?;
         eprintln!("PID file: {} (pid={})", path.display(), pid);
         Ok(Self {
             path: path.to_path_buf(),
@@ -235,6 +255,49 @@ async fn handle_socket_connection(
     Ok(())
 }
 
+fn ensure_runtime_parent(path: &Path) -> Result<()> {
+    let parent = path
+        .parent()
+        .with_context(|| format!("Path has no parent directory: {}", path.display()))?;
+
+    if !parent.exists() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create runtime directory: {}", parent.display()))?;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).with_context(
+            || {
+                format!(
+                    "Failed to secure runtime directory permissions: {}",
+                    parent.display()
+                )
+            },
+        )?;
+    }
+
+    Ok(())
+}
+
+fn prepare_socket_path(socket_path: &Path) -> Result<()> {
+    ensure_runtime_parent(socket_path)?;
+
+    if !socket_path.exists() {
+        return Ok(());
+    }
+
+    let metadata = std::fs::symlink_metadata(socket_path)
+        .with_context(|| format!("Failed to inspect socket path: {}", socket_path.display()))?;
+
+    if metadata.file_type().is_socket() {
+        std::fs::remove_file(socket_path)
+            .with_context(|| format!("Failed to remove stale socket: {}", socket_path.display()))?;
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "Refusing to replace non-socket file at {}. Choose a different --socket path or remove the file manually.",
+        socket_path.display(),
+    );
+}
+
 // ── Main daemon entry point ─────────────────────────────────────────
 
 /// Run the daemon.
@@ -266,13 +329,18 @@ pub async fn run_serve(
     let state = Arc::new(AtomicU8::new(STATE_IDLE));
 
     // ── Start Unix socket listener ──────────────────────────────────
-    // Remove stale socket file
-    if socket_path.exists() {
-        std::fs::remove_file(socket_path)?;
-    }
+    prepare_socket_path(socket_path)?;
 
     let listener = UnixListener::bind(socket_path)
         .with_context(|| format!("Failed to bind Unix socket: {}", socket_path.display()))?;
+    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600)).with_context(
+        || {
+            format!(
+                "Failed to secure socket permissions: {}",
+                socket_path.display()
+            )
+        },
+    )?;
 
     let _socket_guard = SocketGuard {
         path: socket_path.to_path_buf(),
@@ -302,8 +370,20 @@ pub async fn run_serve(
     tokio::spawn(async move {
         use tokio::signal::unix::{SignalKind, signal};
 
-        let mut sigusr1 = signal(SignalKind::user_defined1()).expect("Failed to register SIGUSR1");
-        let mut sigusr2 = signal(SignalKind::user_defined2()).expect("Failed to register SIGUSR2");
+        let mut sigusr1 = match signal(SignalKind::user_defined1()) {
+            Ok(signal) => signal,
+            Err(e) => {
+                eprintln!("[daemon] Failed to register SIGUSR1: {e}");
+                return;
+            }
+        };
+        let mut sigusr2 = match signal(SignalKind::user_defined2()) {
+            Ok(signal) => signal,
+            Err(e) => {
+                eprintln!("[daemon] Failed to register SIGUSR2: {e}");
+                return;
+            }
+        };
 
         loop {
             tokio::select! {

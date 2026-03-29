@@ -5,8 +5,8 @@
 /// loading and is entirely CPU-bound (no ONNX inference).
 mod common;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use parakeet_cli::audio::{compute_mel_spectrogram, MelConfig};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use parakeet_cli::audio::{MelConfig, compute_mel_spectrogram};
 
 fn bench_mel_spectrogram(c: &mut Criterion) {
     let config = MelConfig::default();

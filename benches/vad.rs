@@ -7,8 +7,8 @@
 /// Also benchmarks the pure VadSegmenter state machine (no ONNX).
 mod common;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use parakeet_cli::vad::silero::{SileroVad, VadSegmenter, VAD_CHUNK_SAMPLES};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use parakeet_cli::vad::silero::{SileroVad, VAD_CHUNK_SAMPLES, VadSegmenter};
 
 fn bench_vad_single_chunk(c: &mut Criterion) {
     if !common::vad_model_available() {

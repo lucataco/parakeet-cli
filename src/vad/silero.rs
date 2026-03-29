@@ -9,10 +9,13 @@
 use anyhow::{Context, Result};
 use ort::session::Session;
 use ort::value::{Tensor, ValueType};
+use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
 
 /// Silero VAD model URL (v5, ONNX format).
-pub const SILERO_VAD_URL: &str =
-    "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx";
+pub const SILERO_VAD_URL: &str = "https://raw.githubusercontent.com/snakers4/silero-vad/980b17e9d56463e51393a8d92ded473f1b17896a/src/silero_vad/data/silero_vad.onnx";
+const SILERO_VAD_SHA256: &str = "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3";
+const USER_AGENT: &str = concat!("parakeet-cli/", env!("CARGO_PKG_VERSION"));
 
 /// Silero VAD chunk size: 512 samples at 16kHz = 32ms.
 pub const VAD_CHUNK_SAMPLES: usize = 512;
@@ -35,6 +38,7 @@ pub struct SileroVad {
     context: Vec<f32>,
     /// Emit actual runtime I/O tensor shapes once for debugging.
     logged_io_shapes: bool,
+    verbose: bool,
 }
 
 impl SileroVad {
@@ -84,6 +88,7 @@ impl SileroVad {
             sr: VAD_SAMPLE_RATE as i64,
             context: vec![0.0f32; VAD_CONTEXT_SAMPLES],
             logged_io_shapes: false,
+            verbose,
         })
     }
 
@@ -98,12 +103,13 @@ impl SileroVad {
     /// The internal state is updated automatically.
     /// Returns a probability in [0, 1] where higher = more likely speech.
     pub fn process_chunk(&mut self, chunk: &[f32]) -> Result<f32> {
-        assert!(
-            chunk.len() == VAD_CHUNK_SAMPLES,
-            "VAD chunk must be exactly {} samples, got {}",
-            VAD_CHUNK_SAMPLES,
-            chunk.len()
-        );
+        if chunk.len() != VAD_CHUNK_SAMPLES {
+            anyhow::bail!(
+                "VAD chunk must be exactly {} samples, got {}",
+                VAD_CHUNK_SAMPLES,
+                chunk.len()
+            );
+        }
 
         let model_input = build_model_input(&self.context, chunk);
         let model_input_len = model_input.len();
@@ -121,7 +127,7 @@ impl SileroVad {
         let sr_tensor =
             Tensor::from_array(((), vec![self.sr])).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-        if !self.logged_io_shapes {
+        if self.verbose && !self.logged_io_shapes {
             eprintln!(
                 "[debug] Silero inputs: input=[1, {}] state=[2, 1, {}] sr=[]",
                 model_input_len, self.state_dim
@@ -142,15 +148,24 @@ impl SileroVad {
         let (_prob_shape, prob_data) = outputs["output"]
             .try_extract_tensor::<f32>()
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let speech_prob = prob_data[0];
+        let speech_prob = *prob_data
+            .first()
+            .context("Silero VAD returned an empty probability tensor")?;
 
         // Output 1: updated state [2, 1, 64]
         let (_state_shape, state_data) = outputs["stateN"]
             .try_extract_tensor::<f32>()
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        if !self.logged_io_shapes {
+        if self.verbose && !self.logged_io_shapes {
             eprintln!("[debug] Silero output stateN shape: {:?}", _state_shape);
             self.logged_io_shapes = true;
+        }
+        if state_data.len() != self.state.len() {
+            anyhow::bail!(
+                "Silero VAD returned invalid state length: got {}, expected {}",
+                state_data.len(),
+                self.state.len(),
+            );
         }
         self.state = state_data.to_vec();
         self.context
@@ -229,16 +244,27 @@ fn describe_tensor_shape(dtype: &ValueType) -> String {
 pub async fn ensure_vad_model(model_dir: &std::path::Path) -> Result<std::path::PathBuf> {
     let vad_path = model_dir.join("silero_vad.onnx");
 
-    if vad_path.exists() {
+    if vad_path.exists() && file_matches_sha256(&vad_path, SILERO_VAD_SHA256)? {
         return Ok(vad_path);
     }
 
-    eprintln!("Downloading Silero VAD model...");
+    if vad_path.exists() {
+        eprintln!("Silero VAD checksum mismatch, re-downloading...");
+        tokio::fs::remove_file(&vad_path).await.with_context(|| {
+            format!(
+                "Failed to remove invalid cached Silero VAD model: {}",
+                vad_path.display()
+            )
+        })?;
+    } else {
+        eprintln!("Downloading Silero VAD model...");
+    }
 
     tokio::fs::create_dir_all(model_dir).await?;
 
     let client = reqwest::Client::builder()
-        .user_agent("parakeet-cli/0.1.0")
+        .https_only(true)
+        .user_agent(USER_AGENT)
         .build()?;
 
     let response = client
@@ -252,10 +278,22 @@ pub async fn ensure_vad_model(model_dir: &std::path::Path) -> Result<std::path::
     }
 
     let bytes = response.bytes().await?;
+    let actual_sha256 = format!("{:x}", Sha256::digest(&bytes));
+    if actual_sha256 != SILERO_VAD_SHA256 {
+        anyhow::bail!(
+            "Silero VAD checksum mismatch: expected {}, got {}",
+            SILERO_VAD_SHA256,
+            actual_sha256,
+        );
+    }
 
     // Atomic write
     let tmp_path = model_dir.join(".silero_vad.onnx.tmp");
-    tokio::fs::write(&tmp_path, &bytes).await?;
+    let _ = tokio::fs::remove_file(&tmp_path).await;
+    let mut file = tokio::fs::File::create(&tmp_path).await?;
+    file.write_all(&bytes).await?;
+    file.sync_all().await?;
+    drop(file);
     tokio::fs::rename(&tmp_path, &vad_path).await?;
 
     eprintln!(
@@ -265,6 +303,35 @@ pub async fn ensure_vad_model(model_dir: &std::path::Path) -> Result<std::path::
     );
 
     Ok(vad_path)
+}
+
+fn file_matches_sha256(path: &std::path::Path, expected_sha256: &str) -> Result<bool> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(path).with_context(|| {
+        format!(
+            "Failed to open file for checksum verification: {}",
+            path.display()
+        )
+    })?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+
+    loop {
+        let read = reader.read(&mut buf).with_context(|| {
+            format!(
+                "Failed to read file for checksum verification: {}",
+                path.display()
+            )
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buf[..read]);
+    }
+
+    Ok(format!("{:x}", hasher.finalize()) == expected_sha256)
 }
 
 /// State machine for VAD-based speech segmentation.

@@ -73,9 +73,32 @@ impl TdtDecoder {
         encoded_length: i64,
         blank_id: usize,
     ) -> Result<Vec<usize>> {
+        if enc_shape.len() != 3 {
+            anyhow::bail!(
+                "Encoder returned invalid shape {:?}; expected [batch, hidden_dim, time]",
+                enc_shape
+            );
+        }
+        if encoded_length < 0 {
+            anyhow::bail!("Encoder returned negative encoded length: {encoded_length}");
+        }
+
         let _batch = enc_shape[0];
         let hidden_dim = enc_shape[1];
         let time_dim = enc_shape[2];
+
+        let expected_len = hidden_dim
+            .checked_mul(time_dim)
+            .context("Encoder output shape overflowed while validating dimensions")?;
+        if encoder_output.len() < expected_len {
+            anyhow::bail!(
+                "Encoder output buffer too small: got {}, expected at least {} for shape {:?}",
+                encoder_output.len(),
+                expected_len,
+                enc_shape,
+            );
+        }
+
         let max_steps = (encoded_length as usize).min(time_dim);
 
         let mut tokens: Vec<usize> = Vec::new();
@@ -142,6 +165,12 @@ impl TdtDecoder {
 
             // Parse combined logits: first 1025 = token logits, last 5 = duration logits
             let total = self.vocab_size + self.num_durations; // 1030
+            if logits_data.len() < total {
+                anyhow::bail!(
+                    "Decoder logits too small: got {}, expected at least {total}",
+                    logits_data.len(),
+                );
+            }
             let offset = logits_data.len() - total;
             let token_logits = &logits_data[offset..offset + self.vocab_size];
             let duration_logits = &logits_data[offset + self.vocab_size..];
