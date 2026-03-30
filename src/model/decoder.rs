@@ -10,7 +10,6 @@ use std::path::Path;
 /// encoder and prediction outputs to produce token + duration logits.
 ///
 /// Output shape is [B, T, U, vocab_size + num_durations].
-/// For v2 (English): 1025 + 5 = 1030
 /// For v3 (multilingual): 8193 + 5 = 8198
 pub struct TdtDecoder {
     session: Session,

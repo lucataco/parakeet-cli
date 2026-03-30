@@ -54,23 +54,13 @@ pub fn generate_stereo_audio(duration_secs: f32, sample_rate: u32) -> Vec<f32> {
 }
 
 /// Return the default model directory path (same logic as the CLI).
-/// Checks v3 first, then falls back to v2 for backward compatibility.
 pub fn default_model_dir() -> PathBuf {
     let base = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("parakeet")
         .join("models");
 
-    let v3 = base.join("parakeet-tdt-0.6b-v3");
-    if v3.exists() {
-        return v3;
-    }
-    let v2 = base.join("parakeet-tdt-0.6b-v2");
-    if v2.exists() {
-        return v2;
-    }
-    // Default to v3 path even if it doesn't exist
-    v3
+    base.join("parakeet-tdt-0.6b-v3")
 }
 
 /// Check whether any Parakeet encoder model is available on disk.

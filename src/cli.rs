@@ -134,3 +134,15 @@ fn default_socket_path() -> PathBuf {
 fn default_pid_file_path() -> PathBuf {
     default_runtime_dir().join("daemon.pid")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_model_dir_uses_v3_path() {
+        let model_dir = default_model_dir();
+
+        assert!(model_dir.ends_with("parakeet/models/parakeet-tdt-0.6b-v3"));
+    }
+}
