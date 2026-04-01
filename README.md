@@ -63,6 +63,7 @@ Options:
   --model-dir <PATH>   Directory to store model files
                         [default: ~/Library/Application Support/parakeet/models/parakeet-tdt-0.6b-v3]
   --int8               Download INT8 quantized model (652 MB, smallest). Default is FP16 (1.2 GB).
+  -v, --verbose        Enable verbose output
 ```
 
 ### `parakeet transcribe`
@@ -76,6 +77,7 @@ Options:
   --model-dir <PATH>   Directory containing model files
   --format <FORMAT>    Output format: text, json [default: text]
   --coreml             Enable CoreML acceleration (experimental)
+  -v, --verbose        Enable verbose output (model details, tensor shapes, timing stats)
 ```
 
 Example with JSON output:
@@ -99,7 +101,9 @@ Options:
   --vad-threshold <F32>  VAD speech probability threshold, 0.0-1.0 [default: 0.5]
   --silence-ms <MS>      Silence duration in ms to end an utterance [default: 1500]
   --clipboard            Copy each transcription to clipboard (via pbcopy)
+  --debug                Print debug info: audio levels, VAD probabilities, state transitions
   --coreml               Enable CoreML acceleration (experimental)
+  -v, --verbose          Enable verbose output (model details, tensor shapes, timing stats)
 ```
 
 Example with a specific microphone and tighter VAD:
@@ -120,8 +124,9 @@ Options:
   --pid-file <PATH>    PID file path [default: ~/Library/Application Support/parakeet/run/daemon.pid]
   --device <NAME>      Audio input device
   --model-dir <PATH>   Directory containing model files
-  --clipboard          Copy transcription to clipboard
+  --clipboard          Copy transcription to clipboard (via pbcopy)
   --coreml             Enable CoreML acceleration (experimental)
+  -v, --verbose        Enable verbose output (model details, tensor shapes, timing stats)
 ```
 
 See [Daemon Mode](#daemon-mode) below for control commands and integration examples.
@@ -150,7 +155,7 @@ Two quantization levels are available, both based on Parakeet TDT 0.6B v3:
 | **FP16** (default) | 1.2 GB | 35 MB | ~1.3 GB | ~59x realtime | `parakeet download` |
 | **INT8** | 652 MB | 18 MB | ~670 MB | ~50x realtime | `parakeet download --int8` |
 
-Both variants are single-file ONNX models (no external data files). The model loader auto-detects which variant is present and prefers FP16 > INT8 > FP32 (legacy).
+The model loader auto-detects which variant is present and prefers FP16 > INT8 > FP32 (legacy). FP32 legacy models may use external data files (`.onnx.data`), which are automatically preloaded.
 
 ## Daemon Mode
 
