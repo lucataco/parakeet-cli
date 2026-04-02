@@ -79,6 +79,10 @@ pub enum Commands {
         /// Enable CoreML acceleration (experimental, may be slower with FP32 models)
         #[arg(long)]
         coreml: bool,
+
+        /// Capture a single utterance and exit (useful for scripting/voice agents)
+        #[arg(long)]
+        single_utterance: bool,
     },
 
     /// Run as a daemon controllable via Unix socket or signals

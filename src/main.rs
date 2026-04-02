@@ -107,6 +107,7 @@ async fn main() -> Result<()> {
             clipboard,
             debug,
             coreml,
+            single_utterance,
         } => {
             // Verify model exists
             if !download::model_exists(&model_dir) {
@@ -126,6 +127,7 @@ async fn main() -> Result<()> {
                 debug,
                 verbose,
                 coreml,
+                single_utterance,
             )
             .await?;
         }

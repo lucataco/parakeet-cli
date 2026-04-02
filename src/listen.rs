@@ -73,6 +73,7 @@ pub async fn run_listen(
     debug: bool,
     verbose: bool,
     use_coreml: bool,
+    single_utterance: bool,
 ) -> Result<()> {
     // Download VAD model if needed
     let vad_path = vad::ensure_vad_model(model_dir).await?;
@@ -311,6 +312,12 @@ pub async fn run_listen(
                                         if let Err(e) = copy_to_clipboard(text.trim()) {
                                             eprintln!("[clipboard error] {e}");
                                         }
+                                    }
+
+                                    // In single-utterance mode, exit after the first
+                                    // successful transcription
+                                    if single_utterance {
+                                        return Ok(());
                                     }
                                 } else if debug {
                                     eprintln!("[debug] Transcription returned empty text");

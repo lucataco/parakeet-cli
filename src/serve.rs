@@ -12,6 +12,7 @@
 ///   skhd: `ctrl - r : echo '{"command":"toggle"}' | nc -U "$HOME/Library/Application Support/parakeet/run/daemon.sock"`
 ///   signal: `kill -USR1 $(cat "$HOME/Library/Application Support/parakeet/run/daemon.pid")`
 use anyhow::{Context, Result};
+use std::collections::VecDeque;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
@@ -32,6 +33,8 @@ const STATE_IDLE: u8 = 0;
 const STATE_RECORDING: u8 = 1;
 const STATE_STOPPING: u8 = 2;
 const STATE_SHUTDOWN: u8 = 3;
+const STATE_CAPTURE: u8 = 4;
+const STATE_CANCELLING: u8 = 5;
 
 fn state_name(s: u8) -> &'static str {
     match s {
@@ -39,8 +42,29 @@ fn state_name(s: u8) -> &'static str {
         STATE_RECORDING => "recording",
         STATE_STOPPING => "stopping",
         STATE_SHUTDOWN => "shutdown",
+        STATE_CAPTURE => "capturing",
+        STATE_CANCELLING => "cancelling",
         _ => "unknown",
     }
+}
+
+/// Push samples into a preroll ring buffer, keeping the last `max_samples`.
+fn push_preroll(preroll: &mut VecDeque<f32>, chunk: &[f32], max_samples: usize) {
+    preroll.extend(chunk.iter().copied());
+    while preroll.len() > max_samples {
+        preroll.pop_front();
+    }
+}
+
+/// Shared channel for returning capture results to a waiting socket connection.
+type CaptureChannel = Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<CaptureResult>>>>;
+
+/// Result from a single-utterance capture session.
+#[derive(Clone, Debug)]
+struct CaptureResult {
+    text: String,
+    duration: f64,
+    inference_time: f64,
 }
 
 // ── PID file RAII guard ─────────────────────────────────────────────
@@ -129,12 +153,225 @@ struct SocketResponse {
     state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inference_time: Option<f64>,
 }
 
-/// Handle a single socket connection.
+/// Handle a fire-and-forget socket command (toggle, start, stop, status, shutdown, cancel).
+async fn handle_quick_command(
+    stream: &mut tokio::net::UnixStream,
+    command: &str,
+    state: &Arc<AtomicU8>,
+    _capture_tx: &CaptureChannel,
+) -> Result<()> {
+    let current = state.load(Ordering::SeqCst);
+
+    let resp = match command {
+        "toggle" => match current {
+            STATE_IDLE => {
+                state.store(STATE_RECORDING, Ordering::SeqCst);
+                eprintln!("[daemon] Recording started (socket toggle)");
+                SocketResponse {
+                    status: "ok".into(),
+                    state: Some("recording".into()),
+                    message: Some("Recording started".into()),
+                    text: None, duration: None, inference_time: None,
+                }
+            }
+            STATE_RECORDING | STATE_CAPTURE => {
+                state.store(STATE_STOPPING, Ordering::SeqCst);
+                eprintln!("[daemon] Recording stopping (socket toggle)");
+                SocketResponse {
+                    status: "ok".into(),
+                    state: Some("stopping".into()),
+                    message: Some("Recording stopping".into()),
+                    text: None, duration: None, inference_time: None,
+                }
+            }
+            _ => SocketResponse {
+                status: "ok".into(),
+                state: Some(state_name(current).into()),
+                message: Some("Cannot toggle in current state".into()),
+                text: None, duration: None, inference_time: None,
+            },
+        },
+        "start" => {
+            if current == STATE_IDLE {
+                state.store(STATE_RECORDING, Ordering::SeqCst);
+                eprintln!("[daemon] Recording started (socket start)");
+                SocketResponse {
+                    status: "ok".into(),
+                    state: Some("recording".into()),
+                    message: Some("Recording started".into()),
+                    text: None, duration: None, inference_time: None,
+                }
+            } else {
+                SocketResponse {
+                    status: "ok".into(),
+                    state: Some(state_name(current).into()),
+                    message: Some("Already recording or busy".into()),
+                    text: None, duration: None, inference_time: None,
+                }
+            }
+        }
+        "stop" => {
+            if current == STATE_RECORDING || current == STATE_CAPTURE {
+                state.store(STATE_STOPPING, Ordering::SeqCst);
+                eprintln!("[daemon] Recording stopping (socket stop)");
+                SocketResponse {
+                    status: "ok".into(),
+                    state: Some("stopping".into()),
+                    message: Some("Recording stopping".into()),
+                    text: None, duration: None, inference_time: None,
+                }
+            } else {
+                SocketResponse {
+                    status: "ok".into(),
+                    state: Some(state_name(current).into()),
+                    message: Some("Not recording".into()),
+                    text: None, duration: None, inference_time: None,
+                }
+            }
+        }
+        "cancel" => {
+            if current == STATE_RECORDING || current == STATE_CAPTURE {
+                state.store(STATE_CANCELLING, Ordering::SeqCst);
+                eprintln!("[daemon] Recording cancelling (socket cancel)");
+                SocketResponse {
+                    status: "ok".into(),
+                    state: Some("idle".into()),
+                    message: Some("Recording cancelled".into()),
+                    text: None, duration: None, inference_time: None,
+                }
+            } else {
+                SocketResponse {
+                    status: "ok".into(),
+                    state: Some(state_name(current).into()),
+                    message: Some("Not recording".into()),
+                    text: None, duration: None, inference_time: None,
+                }
+            }
+        }
+        "status" => SocketResponse {
+            status: "ok".into(),
+            state: Some(state_name(current).into()),
+            message: None,
+            text: None, duration: None, inference_time: None,
+        },
+        "shutdown" => {
+            state.store(STATE_SHUTDOWN, Ordering::SeqCst);
+            eprintln!("[daemon] Shutdown requested (socket)");
+            SocketResponse {
+                status: "ok".into(),
+                state: Some("shutdown".into()),
+                message: Some("Shutting down".into()),
+                text: None, duration: None, inference_time: None,
+            }
+        }
+        _ => SocketResponse {
+            status: "error".into(),
+            state: None,
+            message: Some(format!(
+                "Unknown command: {command}. Valid: toggle, start, stop, capture, cancel, status, shutdown"
+            )),
+            text: None, duration: None, inference_time: None,
+        },
+    };
+
+    let json = serde_json::to_string(&resp)?;
+    stream.write_all(json.as_bytes()).await?;
+
+    Ok(())
+}
+
+/// Handle the `capture` command: start recording, wait for one utterance,
+/// and return the transcription on the same socket connection.
+async fn handle_capture_command(
+    stream: &mut tokio::net::UnixStream,
+    state: &Arc<AtomicU8>,
+    capture_tx: &CaptureChannel,
+) -> Result<()> {
+    let current = state.load(Ordering::SeqCst);
+    if current != STATE_IDLE {
+        let resp = SocketResponse {
+            status: "error".into(),
+            state: Some(state_name(current).into()),
+            message: Some("Busy — cannot capture right now".into()),
+            text: None, duration: None, inference_time: None,
+        };
+        let json = serde_json::to_string(&resp)?;
+        stream.write_all(json.as_bytes()).await?;
+        return Ok(());
+    }
+
+    // Set up the oneshot channel for the result
+    let (tx, rx) = tokio::sync::oneshot::channel::<CaptureResult>();
+    {
+        let mut lock = capture_tx.lock().await;
+        *lock = Some(tx);
+    }
+
+    // Transition to CAPTURE state — main loop will start recording
+    state.store(STATE_CAPTURE, Ordering::SeqCst);
+    eprintln!("[daemon] Capture started (socket capture)");
+
+    // Wait for the result with a 30-second timeout
+    let resp = match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+        Ok(Ok(result)) => {
+            if result.text.is_empty() {
+                SocketResponse {
+                    status: "ok".into(),
+                    state: Some("idle".into()),
+                    message: Some("No speech detected or cancelled".into()),
+                    text: None, duration: None, inference_time: None,
+                }
+            } else {
+                SocketResponse {
+                    status: "ok".into(),
+                    state: Some("idle".into()),
+                    message: None,
+                    text: Some(result.text),
+                    duration: Some(result.duration),
+                    inference_time: Some(result.inference_time),
+                }
+            }
+        }
+        Ok(Err(_)) => {
+            // Sender was dropped (e.g., cancel or shutdown)
+            SocketResponse {
+                status: "error".into(),
+                state: Some(state_name(state.load(Ordering::SeqCst)).into()),
+                message: Some("Capture aborted".into()),
+                text: None, duration: None, inference_time: None,
+            }
+        }
+        Err(_) => {
+            // Timeout — cancel the capture
+            state.store(STATE_CANCELLING, Ordering::SeqCst);
+            SocketResponse {
+                status: "error".into(),
+                state: Some("idle".into()),
+                message: Some("Capture timed out after 30s".into()),
+                text: None, duration: None, inference_time: None,
+            }
+        }
+    };
+
+    let json = serde_json::to_string(&resp)?;
+    stream.write_all(json.as_bytes()).await?;
+
+    Ok(())
+}
+
+/// Handle a single socket connection: parse the command and dispatch.
 async fn handle_socket_connection(
     stream: &mut tokio::net::UnixStream,
     state: &Arc<AtomicU8>,
+    capture_tx: &CaptureChannel,
 ) -> Result<()> {
     let mut buf = vec![0u8; 1024];
     let n = stream.read(&mut buf).await?;
@@ -154,6 +391,7 @@ async fn handle_socket_connection(
                     status: "error".into(),
                     state: None,
                     message: Some(format!("Invalid JSON: {e}")),
+                    text: None, duration: None, inference_time: None,
                 };
                 let json = serde_json::to_string(&resp)?;
                 stream.write_all(json.as_bytes()).await?;
@@ -164,95 +402,12 @@ async fn handle_socket_connection(
         input.to_string()
     };
 
-    let current = state.load(Ordering::SeqCst);
-
-    let resp = match command.as_str() {
-        "toggle" => match current {
-            STATE_IDLE => {
-                state.store(STATE_RECORDING, Ordering::SeqCst);
-                eprintln!("[daemon] Recording started (socket toggle)");
-                SocketResponse {
-                    status: "ok".into(),
-                    state: Some("recording".into()),
-                    message: Some("Recording started".into()),
-                }
-            }
-            STATE_RECORDING => {
-                state.store(STATE_STOPPING, Ordering::SeqCst);
-                eprintln!("[daemon] Recording stopping (socket toggle)");
-                SocketResponse {
-                    status: "ok".into(),
-                    state: Some("stopping".into()),
-                    message: Some("Recording stopping".into()),
-                }
-            }
-            _ => SocketResponse {
-                status: "ok".into(),
-                state: Some(state_name(current).into()),
-                message: Some("Cannot toggle in current state".into()),
-            },
-        },
-        "start" => {
-            if current == STATE_IDLE {
-                state.store(STATE_RECORDING, Ordering::SeqCst);
-                eprintln!("[daemon] Recording started (socket start)");
-                SocketResponse {
-                    status: "ok".into(),
-                    state: Some("recording".into()),
-                    message: Some("Recording started".into()),
-                }
-            } else {
-                SocketResponse {
-                    status: "ok".into(),
-                    state: Some(state_name(current).into()),
-                    message: Some("Already recording or busy".into()),
-                }
-            }
-        }
-        "stop" => {
-            if current == STATE_RECORDING {
-                state.store(STATE_STOPPING, Ordering::SeqCst);
-                eprintln!("[daemon] Recording stopping (socket stop)");
-                SocketResponse {
-                    status: "ok".into(),
-                    state: Some("stopping".into()),
-                    message: Some("Recording stopping".into()),
-                }
-            } else {
-                SocketResponse {
-                    status: "ok".into(),
-                    state: Some(state_name(current).into()),
-                    message: Some("Not recording".into()),
-                }
-            }
-        }
-        "status" => SocketResponse {
-            status: "ok".into(),
-            state: Some(state_name(current).into()),
-            message: None,
-        },
-        "shutdown" => {
-            state.store(STATE_SHUTDOWN, Ordering::SeqCst);
-            eprintln!("[daemon] Shutdown requested (socket)");
-            SocketResponse {
-                status: "ok".into(),
-                state: Some("shutdown".into()),
-                message: Some("Shutting down".into()),
-            }
-        }
-        _ => SocketResponse {
-            status: "error".into(),
-            state: None,
-            message: Some(format!(
-                "Unknown command: {command}. Valid: toggle, start, stop, status, shutdown"
-            )),
-        },
-    };
-
-    let json = serde_json::to_string(&resp)?;
-    stream.write_all(json.as_bytes()).await?;
-
-    Ok(())
+    // `capture` holds the connection open, everything else is fire-and-forget
+    if command == "capture" {
+        handle_capture_command(stream, state, capture_tx).await
+    } else {
+        handle_quick_command(stream, &command, state, capture_tx).await
+    }
 }
 
 fn ensure_runtime_parent(path: &Path) -> Result<()> {
@@ -327,6 +482,7 @@ pub async fn run_serve(
 
     // Shared state
     let state = Arc::new(AtomicU8::new(STATE_IDLE));
+    let capture_tx: CaptureChannel = Arc::new(tokio::sync::Mutex::new(None));
 
     // ── Start Unix socket listener ──────────────────────────────────
     prepare_socket_path(socket_path)?;
@@ -348,15 +504,22 @@ pub async fn run_serve(
 
     eprintln!("[daemon] Listening on socket: {}", socket_path.display());
 
-    // Spawn socket accept loop
+    // Spawn socket accept loop — each connection is spawned as its own task
+    // so that `capture` (which holds the connection open) doesn't block
+    // other commands like `cancel`.
     let socket_state = state.clone();
+    let socket_capture_tx = capture_tx.clone();
     tokio::spawn(async move {
         loop {
             match listener.accept().await {
                 Ok((mut stream, _)) => {
-                    if let Err(e) = handle_socket_connection(&mut stream, &socket_state).await {
-                        eprintln!("[daemon] Socket error: {e}");
-                    }
+                    let st = socket_state.clone();
+                    let ct = socket_capture_tx.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = handle_socket_connection(&mut stream, &st, &ct).await {
+                            eprintln!("[daemon] Socket error: {e}");
+                        }
+                    });
                 }
                 Err(e) => {
                     eprintln!("[daemon] Socket accept error: {e}");
@@ -439,20 +602,35 @@ pub async fn run_serve(
             break;
         }
 
-        if current != STATE_RECORDING {
-            // Idle — sleep briefly and poll again
+        if current != STATE_RECORDING && current != STATE_CAPTURE {
+            // Idle or other non-recording state — sleep briefly and poll again
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             continue;
         }
 
+        let is_capture_mode = current == STATE_CAPTURE;
+
         // ── Recording session ───────────────────────────────────────
-        eprintln!("[daemon] Starting recording session...");
+        eprintln!(
+            "[daemon] Starting {} session...",
+            if is_capture_mode { "capture" } else { "recording" }
+        );
 
         // Start audio capture for this session
         let capture = match audio::start_capture(device) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[daemon] Failed to start capture: {e}");
+                // If capture mode, send error through channel
+                if is_capture_mode {
+                    if let Some(tx) = capture_tx.lock().await.take() {
+                        let _ = tx.send(CaptureResult {
+                            text: String::new(),
+                            duration: 0.0,
+                            inference_time: 0.0,
+                        });
+                    }
+                }
                 state.store(STATE_IDLE, Ordering::SeqCst);
                 continue;
             }
@@ -467,13 +645,23 @@ pub async fn run_serve(
         let mut resampler = audio::StreamingResampler::new(capture_rate, 16000);
         let mut vad_buf: Vec<f32> = Vec::new();
 
+        // Preroll buffer: keeps the last 200ms of audio so speech onset isn't clipped
+        let mut preroll: VecDeque<f32> = VecDeque::new();
+        let preroll_samples = (0.2 * 16000.0) as usize; // 3200 samples
+
         // Accumulate all transcriptions from this session
         let mut session_text = String::new();
+        let mut session_duration: f64 = 0.0;
+        let mut session_infer_time: f64 = 0.0;
+        let mut got_first_utterance = false;
 
-        // Recording loop — runs until state changes from RECORDING
+        // Recording loop — runs until state changes
         loop {
             let current = state.load(Ordering::SeqCst);
-            if current == STATE_STOPPING || current == STATE_SHUTDOWN {
+            if current == STATE_STOPPING
+                || current == STATE_CANCELLING
+                || current == STATE_SHUTDOWN
+            {
                 break;
             }
 
@@ -498,19 +686,29 @@ pub async fn run_serve(
             while vad_buf.len() >= VAD_CHUNK_SAMPLES {
                 let vad_chunk: Vec<f32> = vad_buf.drain(..VAD_CHUNK_SAMPLES).collect();
                 let speech_prob = vad_model.process_chunk(&vad_chunk)?;
+
+                // Always maintain the preroll buffer
+                push_preroll(&mut preroll, &vad_chunk, preroll_samples);
+
                 let event = segmenter.process(speech_prob);
 
                 match event {
                     VadEvent::SpeechStart => {
                         utterance_buffer.clear();
-                        utterance_buffer.push(&vad_chunk);
+                        // Use preroll to capture audio before VAD triggered
+                        let preroll_vec: Vec<f32> = preroll.iter().copied().collect();
+                        utterance_buffer.push(&preroll_vec);
+                        preroll.clear();
                     }
                     VadEvent::SpeechEnd => {
+                        let duration_secs = utterance_buffer.duration_secs();
                         let samples = utterance_buffer.drain();
                         if samples.len() > 1600 {
                             let features = audio::compute_mel_spectrogram(&samples, &mel_config);
+                            let infer_start = std::time::Instant::now();
                             match model.transcribe(&features) {
                                 Ok(text) => {
+                                    let infer_time = infer_start.elapsed().as_secs_f64();
                                     let text = text.trim().to_string();
                                     if !text.is_empty() {
                                         eprintln!("[daemon] Transcribed: {}", text);
@@ -518,6 +716,14 @@ pub async fn run_serve(
                                             session_text.push(' ');
                                         }
                                         session_text.push_str(&text);
+                                        session_duration += duration_secs as f64;
+                                        session_infer_time += infer_time;
+                                        got_first_utterance = true;
+
+                                        // In capture mode, exit after first utterance
+                                        if is_capture_mode {
+                                            break;
+                                        }
                                     }
                                 }
                                 Err(e) => {
@@ -533,46 +739,113 @@ pub async fn run_serve(
                     }
                 }
             }
+
+            // Break outer loop too if capture mode got its utterance
+            if is_capture_mode && got_first_utterance {
+                break;
+            }
         }
 
-        let mut remaining = resampler.finish();
-        if !remaining.is_empty() {
-            vad_buf.append(&mut remaining);
-        }
-        while vad_buf.len() >= VAD_CHUNK_SAMPLES {
-            let vad_chunk: Vec<f32> = vad_buf.drain(..VAD_CHUNK_SAMPLES).collect();
-            let speech_prob = vad_model.process_chunk(&vad_chunk)?;
-            let event = segmenter.process(speech_prob);
+        // ── Handle cancellation ─────────────────────────────────────
+        let current_after = state.load(Ordering::SeqCst);
+        if current_after == STATE_CANCELLING {
+            eprintln!("[daemon] Session cancelled, discarding audio.");
+            utterance_buffer.clear();
 
-            match event {
-                VadEvent::SpeechStart => {
-                    utterance_buffer.clear();
-                    utterance_buffer.push(&vad_chunk);
+            // If capture mode, send empty result through channel
+            if is_capture_mode {
+                if let Some(tx) = capture_tx.lock().await.take() {
+                    let _ = tx.send(CaptureResult {
+                        text: String::new(),
+                        duration: 0.0,
+                        inference_time: 0.0,
+                    });
                 }
-                VadEvent::SpeechEnd => {
-                    let samples = utterance_buffer.drain();
-                    if samples.len() > 1600 {
-                        let features = audio::compute_mel_spectrogram(&samples, &mel_config);
-                        match model.transcribe(&features) {
-                            Ok(text) => {
-                                let text = text.trim().to_string();
-                                if !text.is_empty() {
-                                    eprintln!("[daemon] Transcribed: {}", text);
-                                    if !session_text.is_empty() {
-                                        session_text.push(' ');
+            }
+
+            drop(capture);
+            state.store(STATE_IDLE, Ordering::SeqCst);
+            eprintln!("[daemon] Session cancelled. Ready for next command.");
+            continue;
+        }
+
+        // ── Flush remaining audio (non-cancel path) ─────────────────
+        if !is_capture_mode || !got_first_utterance {
+            let mut remaining = resampler.finish();
+            if !remaining.is_empty() {
+                vad_buf.append(&mut remaining);
+            }
+            while vad_buf.len() >= VAD_CHUNK_SAMPLES {
+                let vad_chunk: Vec<f32> = vad_buf.drain(..VAD_CHUNK_SAMPLES).collect();
+                let speech_prob = vad_model.process_chunk(&vad_chunk)?;
+                push_preroll(&mut preroll, &vad_chunk, preroll_samples);
+                let event = segmenter.process(speech_prob);
+
+                match event {
+                    VadEvent::SpeechStart => {
+                        utterance_buffer.clear();
+                        let preroll_vec: Vec<f32> = preroll.iter().copied().collect();
+                        utterance_buffer.push(&preroll_vec);
+                        preroll.clear();
+                    }
+                    VadEvent::SpeechEnd => {
+                        let duration_secs = utterance_buffer.duration_secs();
+                        let samples = utterance_buffer.drain();
+                        if samples.len() > 1600 {
+                            let features = audio::compute_mel_spectrogram(&samples, &mel_config);
+                            let infer_start = std::time::Instant::now();
+                            match model.transcribe(&features) {
+                                Ok(text) => {
+                                    let infer_time = infer_start.elapsed().as_secs_f64();
+                                    let text = text.trim().to_string();
+                                    if !text.is_empty() {
+                                        eprintln!("[daemon] Transcribed: {}", text);
+                                        if !session_text.is_empty() {
+                                            session_text.push(' ');
+                                        }
+                                        session_text.push_str(&text);
+                                        session_duration += duration_secs as f64;
+                                        session_infer_time += infer_time;
                                     }
-                                    session_text.push_str(&text);
                                 }
-                            }
-                            Err(e) => {
-                                eprintln!("[daemon] Transcription error: {e}");
+                                Err(e) => {
+                                    eprintln!("[daemon] Transcription error: {e}");
+                                }
                             }
                         }
                     }
+                    VadEvent::None => {
+                        if segmenter.state() == VadState::Speaking {
+                            utterance_buffer.push(&vad_chunk);
+                        }
+                    }
                 }
-                VadEvent::None => {
-                    if segmenter.state() == VadState::Speaking {
-                        utterance_buffer.push(&vad_chunk);
+            }
+
+            // Transcribe any remaining buffered audio
+            if utterance_buffer.duration_secs() > 0.1 {
+                let duration_secs = utterance_buffer.duration_secs();
+                let samples = utterance_buffer.drain();
+                if samples.len() > 1600 {
+                    let features = audio::compute_mel_spectrogram(&samples, &mel_config);
+                    let infer_start = std::time::Instant::now();
+                    match model.transcribe(&features) {
+                        Ok(text) => {
+                            let infer_time = infer_start.elapsed().as_secs_f64();
+                            let text = text.trim().to_string();
+                            if !text.is_empty() {
+                                eprintln!("[daemon] Transcribed (final): {}", text);
+                                if !session_text.is_empty() {
+                                    session_text.push(' ');
+                                }
+                                session_text.push_str(&text);
+                                session_duration += duration_secs as f64;
+                                session_infer_time += infer_time;
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[daemon] Final transcription error: {e}");
+                        }
                     }
                 }
             }
@@ -580,32 +853,22 @@ pub async fn run_serve(
 
         // ── End of recording session ────────────────────────────────
 
-        // Transcribe any remaining buffered audio
-        if utterance_buffer.duration_secs() > 0.1 {
-            let samples = utterance_buffer.drain();
-            if samples.len() > 1600 {
-                let features = audio::compute_mel_spectrogram(&samples, &mel_config);
-                match model.transcribe(&features) {
-                    Ok(text) => {
-                        let text = text.trim().to_string();
-                        if !text.is_empty() {
-                            eprintln!("[daemon] Transcribed (final): {}", text);
-                            if !session_text.is_empty() {
-                                session_text.push(' ');
-                            }
-                            session_text.push_str(&text);
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("[daemon] Final transcription error: {e}");
-                    }
-                }
+        // If capture mode, send result through the channel
+        if is_capture_mode {
+            if let Some(tx) = capture_tx.lock().await.take() {
+                let _ = tx.send(CaptureResult {
+                    text: session_text.clone(),
+                    duration: session_duration,
+                    inference_time: session_infer_time,
+                });
             }
         }
 
-        // Output result
+        // Output result to stdout (for non-capture mode, or both)
         if !session_text.is_empty() {
-            println!("{}", session_text);
+            if !is_capture_mode {
+                println!("{}", session_text);
+            }
 
             if clipboard {
                 match copy_to_clipboard(&session_text) {
