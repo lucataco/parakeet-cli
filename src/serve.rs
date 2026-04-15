@@ -179,7 +179,9 @@ async fn handle_quick_command(
                     status: "ok".into(),
                     state: Some("recording".into()),
                     message: Some("Recording started".into()),
-                    text: None, duration: None, inference_time: None,
+                    text: None,
+                    duration: None,
+                    inference_time: None,
                 }
             }
             STATE_RECORDING | STATE_CAPTURE => {
@@ -189,14 +191,18 @@ async fn handle_quick_command(
                     status: "ok".into(),
                     state: Some("stopping".into()),
                     message: Some("Recording stopping".into()),
-                    text: None, duration: None, inference_time: None,
+                    text: None,
+                    duration: None,
+                    inference_time: None,
                 }
             }
             _ => SocketResponse {
                 status: "ok".into(),
                 state: Some(state_name(current).into()),
                 message: Some("Cannot toggle in current state".into()),
-                text: None, duration: None, inference_time: None,
+                text: None,
+                duration: None,
+                inference_time: None,
             },
         },
         "start" => {
@@ -207,14 +213,18 @@ async fn handle_quick_command(
                     status: "ok".into(),
                     state: Some("recording".into()),
                     message: Some("Recording started".into()),
-                    text: None, duration: None, inference_time: None,
+                    text: None,
+                    duration: None,
+                    inference_time: None,
                 }
             } else {
                 SocketResponse {
                     status: "ok".into(),
                     state: Some(state_name(current).into()),
                     message: Some("Already recording or busy".into()),
-                    text: None, duration: None, inference_time: None,
+                    text: None,
+                    duration: None,
+                    inference_time: None,
                 }
             }
         }
@@ -226,14 +236,18 @@ async fn handle_quick_command(
                     status: "ok".into(),
                     state: Some("stopping".into()),
                     message: Some("Recording stopping".into()),
-                    text: None, duration: None, inference_time: None,
+                    text: None,
+                    duration: None,
+                    inference_time: None,
                 }
             } else {
                 SocketResponse {
                     status: "ok".into(),
                     state: Some(state_name(current).into()),
                     message: Some("Not recording".into()),
-                    text: None, duration: None, inference_time: None,
+                    text: None,
+                    duration: None,
+                    inference_time: None,
                 }
             }
         }
@@ -245,14 +259,18 @@ async fn handle_quick_command(
                     status: "ok".into(),
                     state: Some("idle".into()),
                     message: Some("Recording cancelled".into()),
-                    text: None, duration: None, inference_time: None,
+                    text: None,
+                    duration: None,
+                    inference_time: None,
                 }
             } else {
                 SocketResponse {
                     status: "ok".into(),
                     state: Some(state_name(current).into()),
                     message: Some("Not recording".into()),
-                    text: None, duration: None, inference_time: None,
+                    text: None,
+                    duration: None,
+                    inference_time: None,
                 }
             }
         }
@@ -260,7 +278,9 @@ async fn handle_quick_command(
             status: "ok".into(),
             state: Some(state_name(current).into()),
             message: None,
-            text: None, duration: None, inference_time: None,
+            text: None,
+            duration: None,
+            inference_time: None,
         },
         "shutdown" => {
             state.store(STATE_SHUTDOWN, Ordering::SeqCst);
@@ -269,7 +289,9 @@ async fn handle_quick_command(
                 status: "ok".into(),
                 state: Some("shutdown".into()),
                 message: Some("Shutting down".into()),
-                text: None, duration: None, inference_time: None,
+                text: None,
+                duration: None,
+                inference_time: None,
             }
         }
         _ => SocketResponse {
@@ -278,7 +300,9 @@ async fn handle_quick_command(
             message: Some(format!(
                 "Unknown command: {command}. Valid: toggle, start, stop, capture, cancel, status, shutdown"
             )),
-            text: None, duration: None, inference_time: None,
+            text: None,
+            duration: None,
+            inference_time: None,
         },
     };
 
@@ -301,7 +325,9 @@ async fn handle_capture_command(
             status: "error".into(),
             state: Some(state_name(current).into()),
             message: Some("Busy — cannot capture right now".into()),
-            text: None, duration: None, inference_time: None,
+            text: None,
+            duration: None,
+            inference_time: None,
         };
         let json = serde_json::to_string(&resp)?;
         stream.write_all(json.as_bytes()).await?;
@@ -327,7 +353,9 @@ async fn handle_capture_command(
                     status: "ok".into(),
                     state: Some("idle".into()),
                     message: Some("No speech detected or cancelled".into()),
-                    text: None, duration: None, inference_time: None,
+                    text: None,
+                    duration: None,
+                    inference_time: None,
                 }
             } else {
                 SocketResponse {
@@ -346,7 +374,9 @@ async fn handle_capture_command(
                 status: "error".into(),
                 state: Some(state_name(state.load(Ordering::SeqCst)).into()),
                 message: Some("Capture aborted".into()),
-                text: None, duration: None, inference_time: None,
+                text: None,
+                duration: None,
+                inference_time: None,
             }
         }
         Err(_) => {
@@ -356,7 +386,9 @@ async fn handle_capture_command(
                 status: "error".into(),
                 state: Some("idle".into()),
                 message: Some("Capture timed out after 30s".into()),
-                text: None, duration: None, inference_time: None,
+                text: None,
+                duration: None,
+                inference_time: None,
             }
         }
     };
@@ -391,7 +423,9 @@ async fn handle_socket_connection(
                     status: "error".into(),
                     state: None,
                     message: Some(format!("Invalid JSON: {e}")),
-                    text: None, duration: None, inference_time: None,
+                    text: None,
+                    duration: None,
+                    inference_time: None,
                 };
                 let json = serde_json::to_string(&resp)?;
                 stream.write_all(json.as_bytes()).await?;
@@ -613,7 +647,11 @@ pub async fn run_serve(
         // ── Recording session ───────────────────────────────────────
         eprintln!(
             "[daemon] Starting {} session...",
-            if is_capture_mode { "capture" } else { "recording" }
+            if is_capture_mode {
+                "capture"
+            } else {
+                "recording"
+            }
         );
 
         // Start audio capture for this session
@@ -658,9 +696,7 @@ pub async fn run_serve(
         // Recording loop — runs until state changes
         loop {
             let current = state.load(Ordering::SeqCst);
-            if current == STATE_STOPPING
-                || current == STATE_CANCELLING
-                || current == STATE_SHUTDOWN
+            if current == STATE_STOPPING || current == STATE_CANCELLING || current == STATE_SHUTDOWN
             {
                 break;
             }
