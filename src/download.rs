@@ -19,7 +19,7 @@ const HF_REPO_FP16_REVISION: &str = "dc9871ec5ad84a420940077e76e8741b3609bf8b";
 const HF_REPO_V3: &str = "istupakov/parakeet-tdt-0.6b-v3-onnx";
 const HF_REPO_V3_REVISION: &str = "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce";
 
-/// Files needed for the FP16 model (default).
+/// Files needed for the FP16 model.
 /// Encoder + decoder come from the FP16 repo; vocab + config from the v3 repo.
 struct DownloadFile {
     repo: &'static str,

@@ -9,8 +9,12 @@ async fn main() -> Result<()> {
     let verbose = cli.verbose;
 
     match cli.command {
-        Commands::Download { model_dir, int8 } => {
-            download::download_model(&model_dir, int8).await?;
+        Commands::Download {
+            model_dir,
+            int8: _,
+            fp16,
+        } => {
+            download::download_model(&model_dir, !fp16).await?;
         }
 
         Commands::Transcribe {

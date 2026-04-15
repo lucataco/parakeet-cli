@@ -62,7 +62,7 @@ parakeet download [OPTIONS]
 Options:
   --model-dir <PATH>   Directory to store model files
                         [default: ~/Library/Application Support/parakeet/models/parakeet-tdt-0.6b-v3]
-  --int8               Download INT8 quantized model (652 MB, smallest). Default is FP16 (1.2 GB).
+  --fp16               Download FP16 quantized model (1.2 GB) instead of the default INT8 weights.
   -v, --verbose        Enable verbose output
 ```
 
@@ -152,8 +152,8 @@ Two quantization levels are available, both based on Parakeet TDT 0.6B v3:
 
 | Variant | Encoder | Decoder | Total | Speed | Download |
 |---------|---------|---------|-------|-------|----------|
-| **FP16** (default) | 1.2 GB | 35 MB | ~1.3 GB | ~59x realtime | `parakeet download` |
-| **INT8** | 652 MB | 18 MB | ~670 MB | ~50x realtime | `parakeet download --int8` |
+| **INT8** (default) | 652 MB | 18 MB | ~670 MB | ~50x realtime | `parakeet download` |
+| **FP16** | 1.2 GB | 35 MB | ~1.3 GB | ~59x realtime | `parakeet download --fp16` |
 
 The model loader auto-detects which variant is present and prefers FP16 > INT8 > FP32 (legacy). FP32 legacy models may use external data files (`.onnx.data`), which are automatically preloaded.
 

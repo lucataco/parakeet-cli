@@ -8,7 +8,7 @@ use std::path::PathBuf;
     about = "Local speech-to-text powered by NVIDIA Parakeet TDT",
     long_about = "A fast, local speech-to-text CLI using NVIDIA's Parakeet TDT 0.6B v3 model.\n\
                   Supports 25 languages. Runs entirely on-device via ONNX Runtime.\n\
-                  FP16 quantized by default for optimal speed on Apple Silicon."
+                  INT8 quantized by default for smaller downloads on Apple Silicon."
 )]
 pub struct Cli {
     /// Enable verbose output (model details, tensor shapes, timing stats)
@@ -27,9 +27,13 @@ pub enum Commands {
         #[arg(long, default_value_os_t = default_model_dir())]
         model_dir: PathBuf,
 
-        /// Download INT8 quantized model (652 MB, smallest). Default is FP16 (1.2 GB).
-        #[arg(long)]
+        /// Download INT8 quantized model (652 MB, smallest). This is the default.
+        #[arg(long, hide = true)]
         int8: bool,
+
+        /// Download FP16 quantized model (1.2 GB) instead of the default INT8 weights.
+        #[arg(long, conflicts_with = "int8")]
+        fp16: bool,
     },
 
     /// Transcribe an audio file
@@ -148,5 +152,29 @@ mod tests {
         let model_dir = default_model_dir();
 
         assert!(model_dir.ends_with("parakeet/models/parakeet-tdt-0.6b-v3"));
+    }
+
+    #[test]
+    fn download_defaults_to_int8() {
+        let cli = Cli::try_parse_from(["parakeet", "download"]).expect("download parses");
+
+        match cli.command {
+            Commands::Download { int8, fp16, .. } => {
+                assert!(!int8);
+                assert!(!fp16);
+            }
+            _ => panic!("expected download command"),
+        }
+    }
+
+    #[test]
+    fn download_accepts_fp16_override() {
+        let cli = Cli::try_parse_from(["parakeet", "download", "--fp16"])
+            .expect("download with fp16 parses");
+
+        match cli.command {
+            Commands::Download { fp16, .. } => assert!(fp16),
+            _ => panic!("expected download command"),
+        }
     }
 }
