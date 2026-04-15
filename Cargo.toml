@@ -1,6 +1,6 @@
 [package]
 name = "parakeet-cli"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 description = "Local speech-to-text CLI powered by NVIDIA Parakeet TDT via ONNX Runtime"
 license = "Apache-2.0"
