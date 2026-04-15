@@ -23,6 +23,12 @@ Local speech-to-text CLI powered by NVIDIA's Parakeet TDT 0.6B v3 model. Runs en
 
 > Linux/Intel Mac may work with CPU-only inference but are untested.
 
+## Quick Install
+
+```bash
+brew install lucataco/tap/parakeet-cli
+```
+
 ## Installation
 
 ```bash
@@ -40,7 +46,7 @@ cp target/release/parakeet /usr/local/bin/parakeet
 ## Quick Start
 
 ```bash
-# 1. Download model weights (~1.3 GB FP16)
+# 1. Download model weights (~670 MB INT8 by default)
 parakeet download
 
 # 2. Transcribe a file
@@ -338,6 +344,36 @@ cargo bench -- memory              # Memory allocation tracking
 | `memory` | Allocation sizes per stage (mel, buffer, encoder, full pipeline) | Partial |
 
 HTML reports are generated in `target/criterion/` for regression tracking across runs.
+
+## Development
+
+GitHub Actions runs the main CI checks on macOS via `.github/workflows/ci.yml`:
+
+- `cargo fmt --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo test`
+- `cargo build --release --bin parakeet`
+
+## Releasing
+
+Use `scripts/release.sh` to keep the crate version, release notes, git tag, and Homebrew tap update flow in sync.
+
+```bash
+# 1. Bump the crate version and scaffold release notes
+scripts/release.sh prepare 0.1.4
+
+# 2. Review docs/releases/v0.1.4.md, then commit and push main
+git add Cargo.toml Cargo.lock docs/releases/v0.1.4.md
+git commit -m "release v0.1.4"
+git push origin main
+
+# 3. Tag the release from the current HEAD and push the tag
+scripts/release.sh tag 0.1.4
+git push origin v0.1.4
+
+# 4. Update the tap once the tag tarball is available
+scripts/release.sh update-tap 0.1.4 --tap-dir /path/to/homebrew-tap
+```
 
 ## Performance
 
