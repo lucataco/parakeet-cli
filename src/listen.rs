@@ -8,15 +8,18 @@
 /// 3. When VAD detects speech, audio is accumulated in a buffer
 /// 4. When VAD detects end of speech, the buffered audio is transcribed
 /// 5. Transcription result is printed to stdout
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::audio::{self, AudioBuffer};
+use crate::clipboard::copy_text;
 use crate::model::ParakeetModel;
 use crate::vad::{self, SileroVad, VAD_CHUNK_SAMPLES, VadEvent, VadSegmenter, VadState};
+
+const MAX_UTTERANCE_SECS: f32 = 60.0;
 
 /// Compute RMS (root mean square) of a sample buffer.
 fn rms(samples: &[f32]) -> f32 {
@@ -25,31 +28,6 @@ fn rms(samples: &[f32]) -> f32 {
     }
     let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
     (sum_sq / samples.len() as f32).sqrt()
-}
-
-/// Copy text to the macOS clipboard via pbcopy.
-fn copy_to_clipboard(text: &str) -> Result<()> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
-    let mut child = Command::new("pbcopy")
-        .stdin(Stdio::piped())
-        .spawn()
-        .context("Failed to spawn pbcopy (macOS only)")?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(text.as_bytes())?;
-    }
-
-    child.wait()?;
-    Ok(())
-}
-
-fn push_preroll(preroll: &mut VecDeque<f32>, chunk: &[f32], max_samples: usize) {
-    preroll.extend(chunk.iter().copied());
-    while preroll.len() > max_samples {
-        preroll.pop_front();
-    }
 }
 
 fn take_pending_audio_on_shutdown(utterance_buffer: &mut AudioBuffer) -> Option<Vec<f32>> {
@@ -61,20 +39,34 @@ fn take_pending_audio_on_shutdown(utterance_buffer: &mut AudioBuffer) -> Option<
     }
 }
 
+pub struct ListenConfig<'a> {
+    pub device: &'a Option<String>,
+    pub model_dir: &'a Path,
+    pub vad_threshold: f32,
+    pub silence_ms: u64,
+    pub clipboard: bool,
+    pub debug: bool,
+    pub verbose: bool,
+    pub use_coreml: bool,
+    pub single_utterance: bool,
+}
+
 /// Run the live listen pipeline.
 ///
 /// This blocks until Ctrl-C is pressed.
-pub async fn run_listen(
-    device: &Option<String>,
-    model_dir: &Path,
-    vad_threshold: f32,
-    silence_ms: u64,
-    clipboard: bool,
-    debug: bool,
-    verbose: bool,
-    use_coreml: bool,
-    single_utterance: bool,
-) -> Result<()> {
+pub async fn run_listen(config: ListenConfig<'_>) -> Result<()> {
+    let ListenConfig {
+        device,
+        model_dir,
+        vad_threshold,
+        silence_ms,
+        clipboard,
+        debug,
+        verbose,
+        use_coreml,
+        single_utterance,
+    } = config;
+
     // Download VAD model if needed
     let vad_path = vad::ensure_vad_model(model_dir).await?;
 
@@ -118,13 +110,13 @@ pub async fn run_listen(
     .map_err(|e| anyhow::anyhow!("Failed to set Ctrl-C handler: {e}"))?;
 
     // Audio buffer for accumulating speech utterances
-    let mut utterance_buffer = AudioBuffer::new(60.0); // max 60 seconds per utterance
-    let mut resampler = audio::StreamingResampler::new(capture_rate, 16000);
+    let mut utterance_buffer = AudioBuffer::new(MAX_UTTERANCE_SECS);
+    let mut resampler = audio::StreamingResampler::new(capture_rate, audio::TARGET_SAMPLE_RATE);
 
     // VAD processing buffer: accumulate resampled audio, process in 512-sample chunks
     let mut vad_buf: Vec<f32> = Vec::new();
     let mut preroll = VecDeque::new();
-    let preroll_samples = (0.2 * 16000.0) as usize;
+    let preroll_samples = audio::PREROLL_SAMPLES;
 
     let mel_config = audio::MelConfig::default();
 
@@ -255,7 +247,7 @@ pub async fn run_listen(
                 }
             }
 
-            push_preroll(&mut preroll, &vad_chunk, preroll_samples);
+            audio::push_preroll(&mut preroll, &vad_chunk, preroll_samples);
 
             // Run segmenter
             let event = segmenter.process(speech_prob);
@@ -281,7 +273,7 @@ pub async fn run_listen(
                         eprintln!(
                             "[debug] <<< SpeechEnd (duration={:.2}s, samples={})",
                             duration,
-                            (duration * 16000.0) as usize,
+                            (duration * audio::TARGET_SAMPLE_RATE as f32) as usize,
                         );
                     }
                     eprint!("\r[listening] Transcribing {:.1}s utterance...  ", duration);
@@ -289,7 +281,7 @@ pub async fn run_listen(
                     // Transcribe the accumulated utterance
                     let samples = utterance_buffer.drain();
 
-                    if samples.len() > 1600 {
+                    if samples.len() > audio::MIN_UTTERANCE_SAMPLES {
                         // At least 0.1s of audio
                         let features = audio::compute_mel_spectrogram(&samples, &mel_config);
 
@@ -309,7 +301,7 @@ pub async fn run_listen(
                                     println!("{}", text.trim());
 
                                     if clipboard {
-                                        if let Err(e) = copy_to_clipboard(text.trim()) {
+                                        if let Err(e) = copy_text(text.trim()) {
                                             eprintln!("[clipboard error] {e}");
                                         }
                                     }
@@ -353,7 +345,7 @@ pub async fn run_listen(
     while vad_buf.len() >= VAD_CHUNK_SAMPLES {
         let vad_chunk: Vec<f32> = vad_buf.drain(..VAD_CHUNK_SAMPLES).collect();
         let speech_prob = vad_model.process_chunk(&vad_chunk)?;
-        push_preroll(&mut preroll, &vad_chunk, preroll_samples);
+        audio::push_preroll(&mut preroll, &vad_chunk, preroll_samples);
         let event = segmenter.process(speech_prob);
         match event {
             VadEvent::SpeechStart => {
@@ -375,9 +367,16 @@ pub async fn run_listen(
         let features = audio::compute_mel_spectrogram(&samples, &mel_config);
         match model.transcribe(&features) {
             Ok(text) => {
-                if !text.trim().is_empty() {
+                let text = text.trim();
+                if !text.is_empty() {
                     eprint!("\r                                              \r");
-                    println!("{}", text.trim());
+                    println!("{text}");
+
+                    if clipboard {
+                        if let Err(e) = copy_text(text) {
+                            eprintln!("[clipboard error] {e}");
+                        }
+                    }
                 }
             }
             Err(e) => eprintln!("\r[error] Final transcription failed: {e}"),

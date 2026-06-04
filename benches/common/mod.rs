@@ -32,7 +32,7 @@ pub fn generate_noise_audio(duration_secs: f32) -> Vec<f32> {
             // Simple LCG
             rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
             // Map to [-0.5, 0.5]
-            ((rng_state >> 33) as f32 / u32::MAX as f32) - 0.5
+            ((rng_state >> 32) as u32) as f32 / u32::MAX as f32 - 0.5
         })
         .collect()
 }
@@ -63,12 +63,19 @@ pub fn default_model_dir() -> PathBuf {
     base.join("parakeet-tdt-0.6b-v3")
 }
 
-/// Check whether any Parakeet encoder model is available on disk.
+/// Check whether a complete Parakeet model is available on disk.
 pub fn model_available() -> bool {
     let dir = default_model_dir();
-    dir.join("encoder-model.fp16.onnx").exists()
-        || dir.join("encoder-model.int8.onnx").exists()
-        || dir.join("encoder-model.onnx").exists()
+    let has_fp16 = dir.join("encoder-model.fp16.onnx").exists()
+        && dir.join("decoder_joint-model.fp16.onnx").exists();
+    let has_int8 = dir.join("encoder-model.int8.onnx").exists()
+        && dir.join("decoder_joint-model.int8.onnx").exists();
+    let has_fp32 =
+        dir.join("encoder-model.onnx").exists() && dir.join("decoder_joint-model.onnx").exists();
+
+    (has_fp16 || has_int8 || has_fp32)
+        && dir.join("vocab.txt").exists()
+        && dir.join("config.json").exists()
 }
 
 /// Find the encoder model path (FP16 > INT8 > FP32).

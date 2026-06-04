@@ -47,8 +47,12 @@ impl Default for MelConfig {
 ///
 /// Returns Array2<f32> of shape [time_steps, n_mels] where each row is one frame.
 pub fn compute_mel_spectrogram(samples: &[f32], config: &MelConfig) -> Array2<f32> {
-    // 1. Apply preemphasis
+    // 1. Apply preemphasis and center padding to match NeMo's STFT framing.
     let audio = apply_preemphasis(samples, config.preemphasis);
+    if audio.is_empty() {
+        return Array2::zeros((0, config.n_mels));
+    }
+    let audio = center_pad(&audio, config.n_fft / 2);
 
     // 2. Build Hann window
     let window = hann_window(config.win_length);
@@ -89,8 +93,7 @@ pub fn compute_mel_spectrogram(samples: &[f32], config: &MelConfig) -> Array2<f3
         // Zero-pad the FFT input buffer
         fft_input.iter_mut().for_each(|x| *x = 0.0);
 
-        // Apply window — center the windowed signal in the FFT buffer
-        // NeMo uses center=True padding already handled, so we just place samples at the start
+        // Apply window. Center padding is already included in `audio`.
         for i in 0..config.win_length {
             let sample_idx = start + i;
             if sample_idx < audio.len() {
@@ -110,8 +113,8 @@ pub fn compute_mel_spectrogram(samples: &[f32], config: &MelConfig) -> Array2<f3
         // Apply mel filterbank and log
         for mel_idx in 0..config.n_mels {
             let mut mel_energy: f32 = 0.0;
-            for k in 0..n_fft_bins {
-                mel_energy += filterbank[mel_idx][k] * power[k];
+            for (weight, power) in filterbank[mel_idx].iter().zip(&power) {
+                mel_energy += weight * power;
             }
             result[[frame_idx, mel_idx]] = (mel_energy.max(config.log_floor)).ln();
         }
@@ -134,6 +137,14 @@ fn apply_preemphasis(samples: &[f32], alpha: f32) -> Vec<f32> {
         out[i] = samples[i] - alpha * samples[i - 1];
     }
     out
+}
+
+fn center_pad(samples: &[f32], pad: usize) -> Vec<f32> {
+    let mut padded = Vec::with_capacity(samples.len() + 2 * pad);
+    padded.extend(std::iter::repeat_n(0.0, pad));
+    padded.extend_from_slice(samples);
+    padded.extend(std::iter::repeat_n(0.0, pad));
+    padded
 }
 
 /// Generate a Hann window of the given length.
@@ -193,18 +204,18 @@ fn mel_filterbank(
         let center = bin_points[m + 1];
         let right = bin_points[m + 2];
 
-        for k in 0..n_fft_bins {
+        for (k, weight) in filterbank[m].iter_mut().enumerate() {
             let freq_bin = k as f64;
 
             if freq_bin >= left && freq_bin <= center {
                 let denom = center - left;
                 if denom > 0.0 {
-                    filterbank[m][k] = ((freq_bin - left) / denom) as f32;
+                    *weight = ((freq_bin - left) / denom) as f32;
                 }
             } else if freq_bin > center && freq_bin <= right {
                 let denom = right - center;
                 if denom > 0.0 {
-                    filterbank[m][k] = ((right - freq_bin) / denom) as f32;
+                    *weight = ((right - freq_bin) / denom) as f32;
                 }
             }
         }
@@ -270,6 +281,14 @@ mod tests {
     }
 
     #[test]
+    fn test_center_pad() {
+        assert_eq!(
+            center_pad(&[1.0, 2.0], 2),
+            vec![0.0, 0.0, 1.0, 2.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
     fn test_mel_filterbank_shape() {
         let fb = mel_filterbank(512, 128, 16000.0, 0.0, 8000.0);
         assert_eq!(fb.len(), 128);
@@ -283,8 +302,8 @@ mod tests {
         let config = MelConfig::default();
         let mel = compute_mel_spectrogram(&samples, &config);
 
-        // Should produce frames: (16000 - 400) / 160 + 1 = 98 frames
-        assert_eq!(mel.shape()[0], 98);
+        // Center padding adds n_fft / 2 samples on both sides.
+        assert_eq!(mel.shape()[0], 101);
         assert_eq!(mel.shape()[1], 128);
     }
 

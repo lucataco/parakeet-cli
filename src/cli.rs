@@ -65,14 +65,14 @@ pub enum Commands {
         model_dir: PathBuf,
 
         /// VAD speech probability threshold (0.0 - 1.0)
-        #[arg(long, default_value = "0.5")]
+        #[arg(long, default_value = "0.5", value_parser = parse_vad_threshold)]
         vad_threshold: f32,
 
         /// Silence duration in ms to end an utterance
         #[arg(long, default_value = "1500")]
         silence_ms: u64,
 
-        /// Copy transcription to clipboard instead of stdout
+        /// Also copy transcription to clipboard
         #[arg(long)]
         clipboard: bool,
 
@@ -143,6 +143,20 @@ fn default_pid_file_path() -> PathBuf {
     default_runtime_dir().join("daemon.pid")
 }
 
+fn parse_vad_threshold(value: &str) -> Result<f32, String> {
+    let threshold: f32 = value
+        .parse()
+        .map_err(|_| format!("invalid VAD threshold '{value}'"))?;
+
+    if (0.0..=1.0).contains(&threshold) {
+        Ok(threshold)
+    } else {
+        Err(format!(
+            "VAD threshold must be between 0.0 and 1.0, got {threshold}"
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,5 +190,17 @@ mod tests {
             Commands::Download { fp16, .. } => assert!(fp16),
             _ => panic!("expected download command"),
         }
+    }
+
+    #[test]
+    fn vad_threshold_parser_accepts_bounds() {
+        assert_eq!(parse_vad_threshold("0").unwrap(), 0.0);
+        assert_eq!(parse_vad_threshold("1.0").unwrap(), 1.0);
+    }
+
+    #[test]
+    fn vad_threshold_parser_rejects_out_of_range_values() {
+        assert!(parse_vad_threshold("-0.1").is_err());
+        assert!(parse_vad_threshold("1.1").is_err());
     }
 }

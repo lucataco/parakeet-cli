@@ -55,7 +55,7 @@ impl Tokenizer {
         let blank_id = max_id;
 
         if verbose {
-            println!(
+            eprintln!(
                 "Loaded tokenizer: {} tokens, blank_id={}",
                 vocab.len(),
                 blank_id
@@ -88,15 +88,8 @@ impl Tokenizer {
     }
 
     /// Get the vocabulary size (including blank token)
-    #[allow(dead_code)]
     pub fn vocab_size(&self) -> usize {
         self.vocab.len()
-    }
-
-    /// Look up a token by ID
-    #[allow(dead_code)]
-    pub fn token(&self, id: usize) -> Option<&str> {
-        self.vocab.get(id).map(|s| s.as_str())
     }
 }
 

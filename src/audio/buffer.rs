@@ -1,8 +1,10 @@
-/// Ring buffer for accumulating streaming audio samples.
-///
-/// Used in the listen pipeline to collect audio between VAD
-/// speech-start and speech-end events, then drain the complete
-/// utterance for transcription.
+//! Ring buffer for accumulating streaming audio samples.
+//!
+//! Used in the listen pipeline to collect audio between VAD
+//! speech-start and speech-end events, then drain the complete
+//! utterance for transcription.
+
+use super::TARGET_SAMPLE_RATE;
 
 /// A growable audio buffer that accumulates samples for a single utterance.
 ///
@@ -23,9 +25,9 @@ impl AudioBuffer {
     /// # Arguments
     /// * `max_duration_secs` - Maximum utterance duration in seconds (safety limit).
     pub fn new(max_duration_secs: f32) -> Self {
-        let max_samples = (max_duration_secs * 16000.0) as usize;
+        let max_samples = (max_duration_secs * TARGET_SAMPLE_RATE as f32) as usize;
         Self {
-            samples: Vec::with_capacity(16000), // pre-allocate 1 second
+            samples: Vec::with_capacity(TARGET_SAMPLE_RATE as usize),
             max_samples,
         }
     }
@@ -56,20 +58,18 @@ impl AudioBuffer {
     }
 
     /// Current number of samples in the buffer.
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.samples.len()
     }
 
     /// Whether the buffer is empty.
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.samples.is_empty()
     }
 
     /// Duration of buffered audio in seconds (at 16kHz).
     pub fn duration_secs(&self) -> f32 {
-        self.samples.len() as f32 / 16000.0
+        self.samples.len() as f32 / TARGET_SAMPLE_RATE as f32
     }
 }
 
@@ -101,7 +101,7 @@ mod tests {
     #[test]
     fn test_duration() {
         let mut buf = AudioBuffer::new(30.0);
-        buf.push(&vec![0.0; 16000]);
+        buf.push(&vec![0.0; TARGET_SAMPLE_RATE as usize]);
         assert!((buf.duration_secs() - 1.0).abs() < 0.001);
     }
 }

@@ -30,7 +30,7 @@ impl Encoder {
             match Self::try_load_with_coreml(path, verbose, cache_dir) {
                 Ok(s) => {
                     if verbose {
-                        println!("Encoder loaded with CoreML execution provider");
+                        eprintln!("Encoder loaded with CoreML execution provider");
                     }
                     s
                 }
@@ -47,12 +47,12 @@ impl Encoder {
 
         // Log model info
         if verbose {
-            println!("Encoder inputs/outputs:");
+            eprintln!("Encoder inputs/outputs:");
             for input in session.inputs() {
-                println!("  input: {} {:?}", input.name(), input.dtype());
+                eprintln!("  input: {} {:?}", input.name(), input.dtype());
             }
             for output in session.outputs() {
-                println!("  output: {} {:?}", output.name(), output.dtype());
+                eprintln!("  output: {} {:?}", output.name(), output.dtype());
             }
         }
 
@@ -84,7 +84,7 @@ impl Encoder {
             std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create cache dir: {e}"))?;
             let cache_path = dir.to_string_lossy().to_string();
             if verbose {
-                println!("CoreML model cache directory: {cache_path}");
+                eprintln!("CoreML model cache directory: {cache_path}");
             }
             ep = ep.with_model_cache_dir(cache_path);
         }
@@ -140,7 +140,7 @@ impl Encoder {
         if !data_path.exists() {
             // No external data file -- model has embedded weights, nothing to do
             if verbose {
-                println!("No external data file found, model has embedded weights");
+                eprintln!("No external data file found, model has embedded weights");
             }
             return Ok(builder);
         }
@@ -150,7 +150,7 @@ impl Encoder {
             .len();
 
         if verbose {
-            println!(
+            eprintln!(
                 "Pre-loading external data: {} ({:.2} GB)",
                 data_path.display(),
                 file_size as f64 / (1024.0 * 1024.0 * 1024.0)
@@ -161,7 +161,7 @@ impl Encoder {
             .map_err(|e| format!("Failed to read external data file: {e}"))?;
 
         if verbose {
-            println!(
+            eprintln!(
                 "External data loaded into memory ({:.2} GB)",
                 data.len() as f64 / (1024.0 * 1024.0 * 1024.0)
             );
@@ -192,7 +192,7 @@ impl Encoder {
             .map_err(|e| anyhow::anyhow!("{e}"))
             .with_context(|| format!("Failed to load encoder model: {}", path.display()))?;
         if verbose {
-            println!("Encoder loaded with CPU execution provider");
+            eprintln!("Encoder loaded with CPU execution provider");
         }
         Ok(session)
     }

@@ -38,12 +38,12 @@ impl TdtDecoder {
 
         // Log model info
         if verbose {
-            println!("Decoder loaded (vocab_size={vocab_size}):");
+            eprintln!("Decoder loaded (vocab_size={vocab_size}):");
             for input in session.inputs() {
-                println!("  input: {} {:?}", input.name(), input.dtype());
+                eprintln!("  input: {} {:?}", input.name(), input.dtype());
             }
             for output in session.outputs() {
-                println!("  output: {} {:?}", output.name(), output.dtype());
+                eprintln!("  output: {} {:?}", output.name(), output.dtype());
             }
         }
 
@@ -107,8 +107,9 @@ impl TdtDecoder {
         let mut last_label: i32 = blank_id as i32;
 
         // LSTM states: shape [2, 1, 640] — two layers, batch=1
-        let mut state1 = vec![0.0f32; 2 * 1 * self.lstm_hidden];
-        let mut state2 = vec![0.0f32; 2 * 1 * self.lstm_hidden];
+        let state_len = 2 * self.lstm_hidden;
+        let mut state1 = vec![0.0f32; state_len];
+        let mut state2 = vec![0.0f32; state_len];
 
         // Safety limit to prevent infinite loops
         let max_iterations = max_steps * 10;
@@ -196,7 +197,7 @@ impl TdtDecoder {
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
                 state2 = s2_data.to_vec();
 
-                position += duration.max(1);
+                position += duration;
             }
         }
 

@@ -116,55 +116,46 @@ pub fn start_capture(device_name: &Option<String>) -> Result<CaptureStream> {
     let (tx, rx): (Sender<AudioChunk>, Receiver<AudioChunk>) = crossbeam_channel::bounded(200);
 
     let ch = channels;
-    let err_fn = |err: cpal::StreamError| {
-        eprintln!("Audio capture error: {err}");
-    };
+    let stream_config = config.into();
 
     let stream = match sample_format {
-        cpal::SampleFormat::F32 => {
-            let tx = tx.clone();
-            device
-                .build_input_stream(
-                    &config.into(),
-                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        let mono = to_mono_f32(data, ch);
-                        let _ = tx.try_send(AudioChunk { samples: mono });
-                    },
-                    err_fn,
-                    None,
-                )
-                .map_err(|e| anyhow::anyhow!("Failed to build input stream: {e}"))?
+        cpal::SampleFormat::F32 => build_input_stream(&device, &stream_config, ch, tx, |s: f32| s)?,
+        cpal::SampleFormat::F64 => {
+            build_input_stream(&device, &stream_config, ch, tx, |s: f64| s as f32)?
+        }
+        cpal::SampleFormat::I8 => {
+            build_input_stream(&device, &stream_config, ch, tx, |s: i8| s as f32 / 128.0)?
         }
         cpal::SampleFormat::I16 => {
-            let tx = tx.clone();
-            device
-                .build_input_stream(
-                    &config.into(),
-                    move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                        let f32_data: Vec<f32> = data.iter().map(|&s| s as f32 / 32768.0).collect();
-                        let mono = to_mono_f32(&f32_data, ch);
-                        let _ = tx.try_send(AudioChunk { samples: mono });
-                    },
-                    err_fn,
-                    None,
-                )
-                .map_err(|e| anyhow::anyhow!("Failed to build input stream: {e}"))?
+            build_input_stream(&device, &stream_config, ch, tx, |s: i16| s as f32 / 32768.0)?
         }
         cpal::SampleFormat::I32 => {
-            let tx = tx.clone();
-            device
-                .build_input_stream(
-                    &config.into(),
-                    move |data: &[i32], _: &cpal::InputCallbackInfo| {
-                        let f32_data: Vec<f32> =
-                            data.iter().map(|&s| s as f32 / 2147483648.0).collect();
-                        let mono = to_mono_f32(&f32_data, ch);
-                        let _ = tx.try_send(AudioChunk { samples: mono });
-                    },
-                    err_fn,
-                    None,
-                )
-                .map_err(|e| anyhow::anyhow!("Failed to build input stream: {e}"))?
+            build_input_stream(&device, &stream_config, ch, tx, |s: i32| {
+                s as f32 / 2_147_483_648.0
+            })?
+        }
+        cpal::SampleFormat::I64 => {
+            build_input_stream(&device, &stream_config, ch, tx, |s: i64| {
+                (s as f64 / 9_223_372_036_854_775_808.0) as f32
+            })?
+        }
+        cpal::SampleFormat::U8 => build_input_stream(&device, &stream_config, ch, tx, |s: u8| {
+            (s as f32 - 128.0) / 128.0
+        })?,
+        cpal::SampleFormat::U16 => {
+            build_input_stream(&device, &stream_config, ch, tx, |s: u16| {
+                (s as f32 - 32768.0) / 32768.0
+            })?
+        }
+        cpal::SampleFormat::U32 => {
+            build_input_stream(&device, &stream_config, ch, tx, |s: u32| {
+                ((s as f64 - 2_147_483_648.0) / 2_147_483_648.0) as f32
+            })?
+        }
+        cpal::SampleFormat::U64 => {
+            build_input_stream(&device, &stream_config, ch, tx, |s: u64| {
+                ((s as f64 - 9_223_372_036_854_775_808.0) / 9_223_372_036_854_775_808.0) as f32
+            })?
         }
         fmt => anyhow::bail!("Unsupported sample format: {:?}", fmt),
     };
@@ -178,6 +169,31 @@ pub fn start_capture(device_name: &Option<String>) -> Result<CaptureStream> {
         receiver: rx,
         sample_rate,
     })
+}
+
+fn build_input_stream<T, F>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    channels: u16,
+    tx: Sender<AudioChunk>,
+    convert: F,
+) -> Result<cpal::Stream>
+where
+    T: cpal::SizedSample + Copy,
+    F: Fn(T) -> f32 + Send + 'static,
+{
+    device
+        .build_input_stream(
+            config,
+            move |data: &[T], _: &cpal::InputCallbackInfo| {
+                let samples: Vec<f32> = data.iter().map(|&sample| convert(sample)).collect();
+                let mono = to_mono_f32(&samples, channels);
+                let _ = tx.try_send(AudioChunk { samples: mono });
+            },
+            |err| eprintln!("Audio capture error: {err}"),
+            None,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to build input stream: {e}"))
 }
 
 /// Convert interleaved multi-channel audio to mono by averaging.

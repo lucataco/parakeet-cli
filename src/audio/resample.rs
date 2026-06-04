@@ -6,6 +6,8 @@
 /// to a proper sinc-based resampler (rubato) for streaming.
 use anyhow::{Context, Result};
 
+use super::TARGET_SAMPLE_RATE;
+
 /// Stateful streaming linear resampler.
 ///
 /// Preserves source-sample leftovers and fractional position across calls so
@@ -167,7 +169,7 @@ pub fn load_wav_file(path: &std::path::Path, verbose: bool) -> Result<Vec<f32>> 
     let sample_rate = spec.sample_rate;
 
     if verbose {
-        println!(
+        eprintln!(
             "Audio: {}ch, {}Hz, {:?} {}bit",
             channels, sample_rate, spec.sample_format, spec.bits_per_sample
         );
@@ -206,13 +208,13 @@ pub fn load_wav_file(path: &std::path::Path, verbose: bool) -> Result<Vec<f32>> 
     let mono = stereo_to_mono(&raw_samples, channels);
 
     // Resample to 16kHz
-    let resampled = resample_linear(&mono, sample_rate, 16000);
+    let resampled = resample_linear(&mono, sample_rate, TARGET_SAMPLE_RATE);
 
     if verbose {
-        println!(
+        eprintln!(
             "Loaded {} samples ({:.2}s at 16kHz)",
             resampled.len(),
-            resampled.len() as f64 / 16000.0
+            resampled.len() as f64 / TARGET_SAMPLE_RATE as f64
         );
     }
 

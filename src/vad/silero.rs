@@ -79,7 +79,7 @@ impl SileroVad {
         }
 
         // Initial hidden state: zeros [2, 1, state_dim]
-        let state = vec![0.0f32; 2 * 1 * state_dim];
+        let state = vec![0.0f32; 2 * state_dim];
 
         Ok(Self {
             session,
@@ -382,7 +382,7 @@ impl VadSegmenter {
         // Convert silence duration to number of VAD chunks
         // Each chunk is 512 samples at 16kHz = 32ms
         let chunk_ms = (VAD_CHUNK_SAMPLES as f64 / VAD_SAMPLE_RATE as f64 * 1000.0) as u64;
-        let silence_chunks_needed = (silence_ms / chunk_ms).max(1) as usize;
+        let silence_chunks_needed = silence_ms.div_ceil(chunk_ms).max(1) as usize;
 
         // Minimum ~100ms of speech to be considered valid
         let min_speech_chunks = (100 / chunk_ms).max(1) as usize;
@@ -439,7 +439,6 @@ impl VadSegmenter {
     }
 
     /// Reset the segmenter state.
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
         self.state = VadState::Silence;
         self.silence_count = 0;
@@ -497,6 +496,20 @@ mod tests {
             }
         }
         assert!(ended);
+        assert_eq!(seg.state(), VadState::Silence);
+    }
+
+    #[test]
+    fn test_vad_segmenter_ceil_silence_timeout() {
+        let mut seg = VadSegmenter::new(0.5, 33);
+
+        assert!(matches!(seg.process(0.8), VadEvent::SpeechStart));
+        assert!(matches!(seg.process(0.8), VadEvent::None));
+        assert!(matches!(seg.process(0.8), VadEvent::None));
+
+        assert!(matches!(seg.process(0.1), VadEvent::None));
+        assert_eq!(seg.state(), VadState::Speaking);
+        assert!(matches!(seg.process(0.1), VadEvent::SpeechEnd));
         assert_eq!(seg.state(), VadState::Silence);
     }
 

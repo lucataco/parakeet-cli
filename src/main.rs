@@ -42,8 +42,8 @@ async fn main() -> Result<()> {
             let start_load = std::time::Instant::now();
             let samples = audio::load_wav_file(&file, verbose)?;
             if verbose {
-                println!("Audio loaded in {:.2}s", start_load.elapsed().as_secs_f64());
-                println!();
+                eprintln!("Audio loaded in {:.2}s", start_load.elapsed().as_secs_f64());
+                eprintln!();
             }
 
             // Compute mel spectrogram
@@ -51,31 +51,31 @@ async fn main() -> Result<()> {
             let mel_config = audio::MelConfig::default();
             let features = audio::compute_mel_spectrogram(&samples, &mel_config);
             if verbose {
-                println!(
+                eprintln!(
                     "Mel spectrogram: {} frames x {} bins ({:.2}s)",
                     features.shape()[0],
                     features.shape()[1],
                     start_mel.elapsed().as_secs_f64()
                 );
-                println!();
+                eprintln!();
             }
 
             // Load model
             let start_model = std::time::Instant::now();
             let mut model = model::ParakeetModel::load(&model_dir, coreml, verbose)?;
             if verbose {
-                println!(
+                eprintln!(
                     "Model loaded in {:.2}s",
                     start_model.elapsed().as_secs_f64()
                 );
-                println!();
+                eprintln!();
             }
 
             // Transcribe
             let start_infer = std::time::Instant::now();
             let text = model.transcribe(&features)?;
             let infer_time = start_infer.elapsed().as_secs_f64();
-            let audio_duration = samples.len() as f64 / 16000.0;
+            let audio_duration = samples.len() as f64 / audio::TARGET_SAMPLE_RATE as f64;
 
             match format.as_str() {
                 "json" => {
@@ -122,17 +122,17 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
 
-            listen::run_listen(
-                &device,
-                &model_dir,
+            listen::run_listen(listen::ListenConfig {
+                device: &device,
+                model_dir: &model_dir,
                 vad_threshold,
                 silence_ms,
                 clipboard,
                 debug,
                 verbose,
-                coreml,
+                use_coreml: coreml,
                 single_utterance,
-            )
+            })
             .await?;
         }
 

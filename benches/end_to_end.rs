@@ -42,8 +42,7 @@ fn bench_e2e_transcription(c: &mut Criterion) {
             b.iter(|| {
                 // Full pipeline: mel -> encode -> decode -> text
                 let features = compute_mel_spectrogram(samples, &config);
-                let text = model.transcribe(&features).expect("Transcription failed");
-                text
+                model.transcribe(&features).expect("Transcription failed")
             });
         });
     }
@@ -70,10 +69,7 @@ fn bench_e2e_with_mel_precomputed(c: &mut Criterion) {
     group.sample_size(10);
 
     group.bench_function("10s_precomputed_mel", |b| {
-        b.iter(|| {
-            let text = model.transcribe(&features).expect("Transcription failed");
-            text
-        });
+        b.iter(|| model.transcribe(&features).expect("Transcription failed"));
     });
 
     group.finish();

@@ -61,15 +61,14 @@ fn bench_decoder_greedy(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(label), &enc_out, |b, enc| {
             b.iter(|| {
-                let tokens = decoder
+                decoder
                     .decode_greedy(
                         &enc.data,
                         &enc.shape,
                         enc.encoded_length,
                         tokenizer.blank_id,
                     )
-                    .expect("Decoder failed");
-                tokens
+                    .expect("Decoder failed")
             });
         });
     }
