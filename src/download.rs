@@ -2,11 +2,35 @@ use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
+
+/// How download progress is reported to the caller.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ProgressMode {
+    /// Human-readable indicatif progress bars on stderr (interactive use).
+    Bar,
+    /// Machine-readable newline-delimited JSON events on stdout, designed for
+    /// host applications (e.g. Superkeet) to drive a native progress UI.
+    Json,
+}
+
+/// Minimum interval between JSON `fileProgress` events, to avoid flooding the
+/// consumer with one event per network chunk.
+const JSON_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Emit a single newline-delimited JSON event to stdout.
+///
+/// Rust's stdout is line-buffered, so each event is flushed on its trailing
+/// newline — consumers receive events promptly as the download proceeds.
+fn emit_event(value: serde_json::Value) {
+    println!("{value}");
+}
 
 const HF_BASE_URL: &str = "https://huggingface.co";
 const USER_AGENT: &str = concat!("parakeet-cli/", env!("CARGO_PKG_VERSION"));
@@ -83,14 +107,54 @@ const INT8_FILES: &[DownloadFile] = &[
     },
 ];
 
-pub async fn download_model(model_dir: &Path, int8: bool) -> Result<()> {
+pub async fn download_model(model_dir: &Path, int8: bool, progress: ProgressMode) -> Result<()> {
     let files = if int8 { INT8_FILES } else { FP16_FILES };
     let variant = if int8 { "INT8 quantized" } else { "FP16" };
+    let total_files = files.len();
 
-    println!("Downloading Parakeet TDT 0.6B v3 ({variant}) model...");
-    println!("Destination: {}", model_dir.display());
-    println!();
+    match progress {
+        ProgressMode::Bar => {
+            println!("Downloading Parakeet TDT 0.6B v3 ({variant}) model...");
+            println!("Destination: {}", model_dir.display());
+            println!();
+        }
+        ProgressMode::Json => emit_event(json!({
+            "type": "start",
+            "variant": variant,
+            "totalFiles": total_files,
+            "modelDir": model_dir.display().to_string(),
+        })),
+    }
 
+    if let Err(err) = download_all(model_dir, files, progress).await {
+        if progress == ProgressMode::Json {
+            emit_event(json!({ "type": "error", "message": err.to_string() }));
+        }
+        return Err(err);
+    }
+
+    let marker = model_dir.join(".variant");
+    fs::write(&marker, variant).await?;
+
+    match progress {
+        ProgressMode::Bar => {
+            println!();
+            println!("Download complete! Model ready at: {}", model_dir.display());
+        }
+        ProgressMode::Json => emit_event(json!({
+            "type": "complete",
+            "modelDir": model_dir.display().to_string(),
+        })),
+    }
+
+    Ok(())
+}
+
+async fn download_all(
+    model_dir: &Path,
+    files: &'static [DownloadFile],
+    progress: ProgressMode,
+) -> Result<()> {
     fs::create_dir_all(model_dir)
         .await
         .with_context(|| format!("Failed to create directory: {}", model_dir.display()))?;
@@ -100,16 +164,29 @@ pub async fn download_model(model_dir: &Path, int8: bool) -> Result<()> {
         .user_agent(USER_AGENT)
         .build()?;
 
-    for dl in files {
+    let total_files = files.len();
+
+    for (index, dl) in files.iter().enumerate() {
         let dest_path = model_dir.join(dl.filename);
 
         if dest_path.exists() {
             if file_matches_sha256(&dest_path, dl.sha256)? {
-                println!("[skip] {} (already verified)", dl.filename);
+                match progress {
+                    ProgressMode::Bar => println!("[skip] {} (already verified)", dl.filename),
+                    ProgressMode::Json => emit_event(json!({
+                        "type": "fileComplete",
+                        "file": dl.filename,
+                        "index": index,
+                        "totalFiles": total_files,
+                        "status": "skipped",
+                    })),
+                }
                 continue;
             }
 
-            println!("[redownload] {} (checksum mismatch)", dl.filename);
+            if progress == ProgressMode::Bar {
+                println!("[redownload] {} (checksum mismatch)", dl.filename);
+            }
             fs::remove_file(&dest_path).await.with_context(|| {
                 format!(
                     "Failed to remove invalid cached file before re-download: {}",
@@ -118,19 +195,20 @@ pub async fn download_model(model_dir: &Path, int8: bool) -> Result<()> {
             })?;
         }
 
-        download_file(&client, dl, &dest_path).await?;
+        download_file(&client, dl, &dest_path, index, total_files, progress).await?;
     }
-
-    let marker = model_dir.join(".variant");
-    fs::write(&marker, variant).await?;
-
-    println!();
-    println!("Download complete! Model ready at: {}", model_dir.display());
 
     Ok(())
 }
 
-async fn download_file(client: &Client, spec: &DownloadFile, dest_path: &Path) -> Result<()> {
+async fn download_file(
+    client: &Client,
+    spec: &DownloadFile,
+    dest_path: &Path,
+    index: usize,
+    total_files: usize,
+    progress: ProgressMode,
+) -> Result<()> {
     let url = format!(
         "{HF_BASE_URL}/{}/resolve/{}/{}",
         spec.repo, spec.revision, spec.filename
@@ -151,14 +229,32 @@ async fn download_file(client: &Client, spec: &DownloadFile, dest_path: &Path) -
     }
 
     let total_size = response.content_length().unwrap_or(0);
-    let pb = ProgressBar::new(total_size);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta}) {msg}")
-            .context("Failed to build download progress bar template")?
-            .progress_chars("=>-"),
-    );
-    pb.set_message(spec.filename.to_string());
+
+    let pb = match progress {
+        ProgressMode::Bar => {
+            let pb = ProgressBar::new(total_size);
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template(
+                        "{spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta}) {msg}",
+                    )
+                    .context("Failed to build download progress bar template")?
+                    .progress_chars("=>-"),
+            );
+            pb.set_message(spec.filename.to_string());
+            Some(pb)
+        }
+        ProgressMode::Json => {
+            emit_event(json!({
+                "type": "fileStart",
+                "file": spec.filename,
+                "index": index,
+                "totalFiles": total_files,
+                "total": total_size,
+            }));
+            None
+        }
+    };
 
     let tmp_path = temp_path(dest_path);
     let _ = fs::remove_file(&tmp_path).await;
@@ -169,13 +265,33 @@ async fn download_file(client: &Client, spec: &DownloadFile, dest_path: &Path) -
     let mut hasher = Sha256::new();
     let mut stream = response.bytes_stream();
     let mut downloaded: u64 = 0;
+    let mut last_emit = Instant::now();
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.with_context(|| format!("Error downloading {}", spec.filename))?;
         hasher.update(&chunk);
         file.write_all(&chunk).await?;
         downloaded += chunk.len() as u64;
-        pb.set_position(downloaded);
+
+        match progress {
+            ProgressMode::Bar => {
+                if let Some(pb) = &pb {
+                    pb.set_position(downloaded);
+                }
+            }
+            ProgressMode::Json => {
+                if last_emit.elapsed() >= JSON_PROGRESS_INTERVAL {
+                    emit_event(json!({
+                        "type": "fileProgress",
+                        "file": spec.filename,
+                        "index": index,
+                        "downloaded": downloaded,
+                        "total": total_size,
+                    }));
+                    last_emit = Instant::now();
+                }
+            }
+        }
     }
 
     file.flush().await?;
@@ -201,7 +317,22 @@ async fn download_file(client: &Client, spec: &DownloadFile, dest_path: &Path) -
         )
     })?;
 
-    pb.finish_with_message(format!("{} verified", spec.filename));
+    match progress {
+        ProgressMode::Bar => {
+            if let Some(pb) = &pb {
+                pb.finish_with_message(format!("{} verified", spec.filename));
+            }
+        }
+        ProgressMode::Json => emit_event(json!({
+            "type": "fileComplete",
+            "file": spec.filename,
+            "index": index,
+            "totalFiles": total_files,
+            "status": "downloaded",
+            "downloaded": downloaded,
+            "total": total_size,
+        })),
+    }
 
     Ok(())
 }

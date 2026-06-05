@@ -13,8 +13,14 @@ async fn main() -> Result<()> {
             model_dir,
             int8: _,
             fp16,
+            progress,
         } => {
-            download::download_model(&model_dir, !fp16).await?;
+            let mode = if progress == "json" {
+                download::ProgressMode::Json
+            } else {
+                download::ProgressMode::Bar
+            };
+            download::download_model(&model_dir, !fp16, mode).await?;
         }
 
         Commands::Transcribe {

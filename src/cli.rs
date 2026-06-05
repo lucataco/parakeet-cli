@@ -34,6 +34,11 @@ pub enum Commands {
         /// Download FP16 quantized model (1.2 GB) instead of the default INT8 weights.
         #[arg(long, conflicts_with = "int8")]
         fp16: bool,
+
+        /// Progress output: "auto" for human-readable bars, "json" for
+        /// machine-readable newline-delimited JSON events on stdout.
+        #[arg(long, default_value = "auto", value_parser = ["auto", "json"])]
+        progress: String,
     },
 
     /// Transcribe an audio file
@@ -190,6 +195,32 @@ mod tests {
             Commands::Download { fp16, .. } => assert!(fp16),
             _ => panic!("expected download command"),
         }
+    }
+
+    #[test]
+    fn download_progress_defaults_to_auto() {
+        let cli = Cli::try_parse_from(["parakeet", "download"]).expect("download parses");
+
+        match cli.command {
+            Commands::Download { progress, .. } => assert_eq!(progress, "auto"),
+            _ => panic!("expected download command"),
+        }
+    }
+
+    #[test]
+    fn download_accepts_json_progress() {
+        let cli = Cli::try_parse_from(["parakeet", "download", "--progress", "json"])
+            .expect("download with json progress parses");
+
+        match cli.command {
+            Commands::Download { progress, .. } => assert_eq!(progress, "json"),
+            _ => panic!("expected download command"),
+        }
+    }
+
+    #[test]
+    fn download_rejects_unknown_progress() {
+        assert!(Cli::try_parse_from(["parakeet", "download", "--progress", "xml"]).is_err());
     }
 
     #[test]
