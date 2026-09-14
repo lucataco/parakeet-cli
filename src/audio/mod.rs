@@ -5,11 +5,8 @@ pub mod capture;
 pub mod mel;
 pub mod resample;
 
-/// Internal target sample rate for Parakeet audio features.
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
-/// Minimum utterance length worth sending to the model (100ms at 16kHz).
 pub const MIN_UTTERANCE_SAMPLES: usize = TARGET_SAMPLE_RATE as usize / 10;
-/// Audio kept before VAD speech-start so the onset is not clipped (200ms).
 pub const PREROLL_SAMPLES: usize = TARGET_SAMPLE_RATE as usize / 5;
 
 pub use buffer::AudioBuffer;

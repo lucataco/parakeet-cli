@@ -1,11 +1,3 @@
-/// Benchmarks for the ONNX encoder inference.
-///
-/// This is the most expensive stage of the pipeline.
-/// Benchmarks measure wall-clock time and realtime factor for
-/// various audio durations.
-///
-/// Requires model files to be downloaded (`parakeet download`).
-/// Benchmarks are skipped gracefully if the model is not present.
 mod common;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
@@ -30,7 +22,6 @@ fn bench_encoder_inference(c: &mut Criterion) {
     let durations: &[(f32, &str)] = &[(1.0, "1s"), (5.0, "5s"), (10.0, "10s"), (30.0, "30s")];
 
     let mut group = c.benchmark_group("encoder_inference");
-    // Encoder inference is expensive; use fewer samples
     group.sample_size(10);
 
     for &(duration, label) in durations {
@@ -62,7 +53,6 @@ fn bench_encoder_throughput(c: &mut Criterion) {
 
     let config = MelConfig::default();
 
-    // Measure how many audio-seconds per wall-clock second for 10s chunks
     let audio = common::generate_sine_audio(10.0, 440.0);
     let features = compute_mel_spectrogram(&audio, &config);
 

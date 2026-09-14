@@ -1,8 +1,3 @@
-/// Benchmarks for mel spectrogram computation.
-///
-/// Measures the CPU-bound FFT + mel filterbank pipeline across
-/// various audio durations. This is the first stage after audio
-/// loading and is entirely CPU-bound (no ONNX inference).
 mod common;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -32,8 +27,6 @@ fn bench_mel_spectrogram(c: &mut Criterion) {
         });
     }
 
-    // Also benchmark with noise (different spectral content stresses the
-    // filterbank differently, though compute cost is the same).
     let noise_10s = common::generate_noise_audio(10.0);
     group.throughput(Throughput::Elements(noise_10s.len() as u64));
     group.bench_with_input(
@@ -50,8 +43,6 @@ fn bench_mel_spectrogram(c: &mut Criterion) {
 }
 
 fn bench_mel_realtime_factor(c: &mut Criterion) {
-    // Single benchmark that prints the realtime factor for reference.
-    // Uses 10 seconds of audio as the reference duration.
     let config = MelConfig::default();
     let audio = common::generate_sine_audio(10.0, 440.0);
 

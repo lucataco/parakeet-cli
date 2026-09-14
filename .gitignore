@@ -3,3 +3,5 @@
 *.onnx
 *.onnx.data
 .opencode
+.DS_Store
+.refactor-backups/

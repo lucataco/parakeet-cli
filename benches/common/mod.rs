@@ -1,14 +1,6 @@
 #![allow(dead_code)]
-/// Shared helpers for performance benchmarks.
-///
-/// Provides synthetic audio generation and model path detection
-/// so benchmarks are self-contained (no WAV fixture files needed).
 use std::path::PathBuf;
 
-/// Generate a mono sine-wave signal at 16 kHz.
-///
-/// Useful for simulating tonal / speech-like audio without needing
-/// real recordings.
 pub fn generate_sine_audio(duration_secs: f32, freq_hz: f32) -> Vec<f32> {
     let sample_rate = 16_000.0_f32;
     let n_samples = (duration_secs * sample_rate) as usize;
@@ -20,26 +12,18 @@ pub fn generate_sine_audio(duration_secs: f32, freq_hz: f32) -> Vec<f32> {
         .collect()
 }
 
-/// Generate white noise at 16 kHz using a simple LCG PRNG.
-///
-/// Deterministic (seeded) so benchmarks are reproducible.
 pub fn generate_noise_audio(duration_secs: f32) -> Vec<f32> {
     let sample_rate = 16_000.0_f32;
     let n_samples = (duration_secs * sample_rate) as usize;
     let mut rng_state: u64 = 0xDEAD_BEEF_CAFE_1234;
     (0..n_samples)
         .map(|_| {
-            // Simple LCG
             rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
-            // Map to [-0.5, 0.5]
             ((rng_state >> 32) as u32) as f32 / u32::MAX as f32 - 0.5
         })
         .collect()
 }
 
-/// Generate stereo interleaved audio at a given sample rate.
-///
-/// Returns interleaved L/R samples (total length = n_samples * 2).
 pub fn generate_stereo_audio(duration_secs: f32, sample_rate: u32) -> Vec<f32> {
     let n_samples = (duration_secs * sample_rate as f32) as usize;
     let mut out = Vec::with_capacity(n_samples * 2);
@@ -53,7 +37,6 @@ pub fn generate_stereo_audio(duration_secs: f32, sample_rate: u32) -> Vec<f32> {
     out
 }
 
-/// Return the default model directory path (same logic as the CLI).
 pub fn default_model_dir() -> PathBuf {
     let base = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -63,7 +46,6 @@ pub fn default_model_dir() -> PathBuf {
     base.join("parakeet-tdt-0.6b-v3")
 }
 
-/// Check whether a complete Parakeet model is available on disk.
 pub fn model_available() -> bool {
     let dir = default_model_dir();
     let has_fp16 = dir.join("encoder-model.fp16.onnx").exists()
@@ -78,7 +60,6 @@ pub fn model_available() -> bool {
         && dir.join("config.json").exists()
 }
 
-/// Find the encoder model path (FP16 > INT8 > FP32).
 pub fn encoder_path() -> PathBuf {
     let dir = default_model_dir();
     if dir.join("encoder-model.fp16.onnx").exists() {
@@ -90,7 +71,6 @@ pub fn encoder_path() -> PathBuf {
     }
 }
 
-/// Find the decoder model path (FP16 > INT8 > FP32).
 pub fn decoder_path() -> PathBuf {
     let dir = default_model_dir();
     if dir.join("decoder_joint-model.fp16.onnx").exists() {
@@ -102,7 +82,6 @@ pub fn decoder_path() -> PathBuf {
     }
 }
 
-/// Check whether the Silero VAD model is available on disk.
 pub fn vad_model_available() -> bool {
     let dir = default_model_dir();
     dir.join("silero_vad.onnx").exists()

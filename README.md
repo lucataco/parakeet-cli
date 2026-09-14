@@ -249,23 +249,39 @@ echo "toggle" | nc -U "$HOME/Library/Application Support/parakeet/run/daemon.soc
 
 ```
 src/
-├── main.rs              # Entry point, command dispatch
-├── cli.rs               # Clap CLI definitions
-├── download.rs          # HuggingFace model download (multi-repo)
-├── listen.rs            # Live mic → VAD → transcribe pipeline
-├── serve.rs             # Daemon mode (socket + signal control)
+├── main.rs
+├── cli.rs
+├── download.rs
+├── integrity.rs
+├── listen.rs
+├── serve.rs
+├── serve/
+│   ├── collection.rs
+│   ├── protocol.rs
+│   ├── runtime.rs
+│   └── worker.rs
+├── segments.rs
+├── session_capture.rs
+├── session_recognition.rs
 ├── audio/
-│   ├── mel.rs           # 128-bin log-mel spectrogram (FFT, Hann window, mel filterbank)
-│   ├── resample.rs      # WAV loading, stereo→mono, linear interpolation resampling
-│   ├── capture.rs       # Mic capture via cpal (multi-format, multi-channel)
-│   └── buffer.rs        # Growable audio buffer for utterance accumulation
+│   ├── mel.rs
+│   ├── resample.rs
+│   ├── capture.rs
+│   └── buffer.rs
 ├── model/
-│   ├── encoder.rs       # ONNX encoder session (CoreML + CPU, external data preloading)
-│   ├── decoder.rs       # TDT greedy decoder with LSTM state management
-│   └── tokenizer.rs     # SentencePiece vocab, token ID → text
+│   ├── encoder.rs
+│   ├── decoder.rs
+│   └── tokenizer.rs
 └── vad/
-    └── silero.rs        # Silero VAD v5 ONNX, VadSegmenter state machine
+    └── silero.rs
 ```
+
+The daemon's `DaemonContext` handles session commands and shares control state.
+Its child modules separate collection, protocol framing/builders, runtime-file
+ownership and inference delivery. `integrity.rs` provides shared model checksum
+verification. See [daemon protocol 1](docs/session-protocol.md) for events and
+`transcribe --session` replay. Ordinary file transcription and `listen` retain
+their existing APIs and processing paths.
 
 ### Inference Pipeline
 

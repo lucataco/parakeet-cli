@@ -1,6 +1,6 @@
 [package]
 name = "parakeet-cli"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 description = "Local speech-to-text CLI powered by NVIDIA Parakeet TDT via ONNX Runtime"
 license = "Apache-2.0"
@@ -16,51 +16,36 @@ name = "parakeet"
 path = "src/main.rs"
 
 [dependencies]
-# CLI
 clap = { version = "4.5", features = ["derive"] }
 
-# ONNX Runtime with CoreML acceleration
 ort = { version = "2.0.0-rc.12", features = ["coreml"] }
-ndarray = "0.16"   # for our own code; ort uses 0.17 internally but re-exports it
+ndarray = "0.16"
 
-# Async runtime
 tokio = { version = "1", features = ["full"] }
 
-# HTTP downloads
 reqwest = { version = "0.12", features = ["stream"] }
 
-# Progress bars
 indicatif = "0.17"
 
-# Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Error handling
 anyhow = "1"
 
-# Hashing for download integrity verification
 sha2 = "0.10"
 
-# File paths
 dirs = "6"
 
-# Futures utilities (for stream processing)
 futures-util = "0.3"
 
-# Audio file loading (WAV)
 hound = "3.5"
 
-# FFT for mel spectrogram
 realfft = "3"
 
-# Audio capture from microphone
 cpal = "0.15"
 
-# Thread-safe crossbeam channels (for audio callback -> main thread)
 crossbeam-channel = "0.5"
 
-# Ctrl-C handling
 ctrlc = "3.4"
 
 [dev-dependencies]

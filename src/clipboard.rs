@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-/// Copy text to the macOS clipboard via pbcopy.
 pub fn copy_text(text: &str) -> Result<()> {
     let mut child = Command::new("pbcopy")
         .stdin(Stdio::piped())

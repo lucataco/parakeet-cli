@@ -1,13 +1,3 @@
-/// End-to-end benchmarks for the full transcription pipeline.
-///
-/// Measures the complete path: audio -> mel spectrogram -> encoder ->
-/// decoder -> tokenizer -> text. This is what a user experiences
-/// when running `parakeet transcribe`.
-///
-/// Also includes a batch throughput test that transcribes multiple
-/// files sequentially to measure sustained performance.
-///
-/// Requires model files to be downloaded (`parakeet download`).
 mod common;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
@@ -24,7 +14,6 @@ fn bench_e2e_transcription(c: &mut Criterion) {
 
     let model_dir = common::default_model_dir();
 
-    // Load model once
     let mut model =
         ParakeetModel::load(&model_dir, true, false).expect("Failed to load Parakeet model");
 
@@ -40,7 +29,6 @@ fn bench_e2e_transcription(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(label), &audio, |b, samples| {
             b.iter(|| {
-                // Full pipeline: mel -> encode -> decode -> text
                 let features = compute_mel_spectrogram(samples, &config);
                 model.transcribe(&features).expect("Transcription failed")
             });
@@ -51,8 +39,6 @@ fn bench_e2e_transcription(c: &mut Criterion) {
 }
 
 fn bench_e2e_with_mel_precomputed(c: &mut Criterion) {
-    // Measures only the model inference portion (encoder + decoder + tokenizer)
-    // with mel spectrogram pre-computed, to isolate CPU vs ML costs.
     if !common::model_available() {
         return;
     }
@@ -76,9 +62,6 @@ fn bench_e2e_with_mel_precomputed(c: &mut Criterion) {
 }
 
 fn bench_e2e_batch_throughput(c: &mut Criterion) {
-    // Simulate transcribing multiple utterances back-to-back.
-    // This measures sustained throughput, including any overhead
-    // from decoder state resets between utterances.
     if !common::model_available() {
         return;
     }
@@ -89,10 +72,9 @@ fn bench_e2e_batch_throughput(c: &mut Criterion) {
 
     let config = MelConfig::default();
 
-    // Generate 10 different 5-second "utterances"
     let utterances: Vec<Vec<f32>> = (0..10)
         .map(|i| {
-            let freq = 200.0 + (i as f32) * 50.0; // Vary frequency slightly
+            let freq = 200.0 + (i as f32) * 50.0;
             common::generate_sine_audio(5.0, freq)
         })
         .collect();
@@ -116,9 +98,6 @@ fn bench_e2e_batch_throughput(c: &mut Criterion) {
 }
 
 fn bench_e2e_realtime_factor(c: &mut Criterion) {
-    // Explicit RTF measurement: reports time to transcribe N seconds of audio.
-    // The RTF = audio_duration / wall_clock_time.
-    // Values > 1.0 mean faster than realtime.
     if !common::model_available() {
         return;
     }

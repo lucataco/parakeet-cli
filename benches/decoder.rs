@@ -1,10 +1,3 @@
-/// Benchmarks for the TDT greedy decoder.
-///
-/// The decoder runs one ONNX session per time-step in an autoregressive
-/// loop. We measure total decode time and per-step latency for various
-/// encoder output lengths.
-///
-/// Requires model files to be downloaded (`parakeet download`).
 mod common;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
@@ -13,7 +6,6 @@ use parakeet_cli::model::decoder::TdtDecoder;
 use parakeet_cli::model::encoder::Encoder;
 use parakeet_cli::model::tokenizer::Tokenizer;
 
-/// Pre-computed encoder output for a given duration, ready for decoder benchmarks.
 struct EncoderOutput {
     data: Vec<f32>,
     shape: Vec<usize>,
@@ -56,7 +48,6 @@ fn bench_decoder_greedy(c: &mut Criterion) {
     group.sample_size(10);
 
     for &(duration, label) in durations {
-        // Pre-compute encoder output outside the timed region
         let enc_out = prepare_encoder_output(&mut encoder, duration);
 
         group.bench_with_input(BenchmarkId::from_parameter(label), &enc_out, |b, enc| {
@@ -93,7 +84,6 @@ fn bench_decoder_with_tokenizer(c: &mut Criterion) {
     let mut decoder = TdtDecoder::load(&decoder_path, tokenizer.vocab_size(), false)
         .expect("Failed to load decoder");
 
-    // Measure decoder + tokenizer combined for 10s audio
     let enc_out = prepare_encoder_output(&mut encoder, 10.0);
 
     let mut group = c.benchmark_group("decoder_plus_tokenizer");

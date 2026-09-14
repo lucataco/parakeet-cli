@@ -1,17 +1,7 @@
-/// Audio resampling to 16kHz mono.
-///
-/// For Phase 2, we use simple linear interpolation resampling.
-/// This is sufficient for file transcription where quality loss
-/// from linear interpolation is minimal. Phase 3 may upgrade
-/// to a proper sinc-based resampler (rubato) for streaming.
 use anyhow::{Context, Result};
 
 use super::TARGET_SAMPLE_RATE;
 
-/// Stateful streaming linear resampler.
-///
-/// Preserves source-sample leftovers and fractional position across calls so
-/// callback-sized chunks behave like a single continuous stream.
 pub struct StreamingResampler {
     src_rate: u32,
     target_rate: u32,
@@ -108,9 +98,6 @@ impl StreamingResampler {
     }
 }
 
-/// Resample audio from source sample rate to target sample rate using linear interpolation.
-///
-/// For 16kHz -> 16kHz this is a no-op (returns a clone).
 pub fn resample_linear(samples: &[f32], src_rate: u32, target_rate: u32) -> Vec<f32> {
     if src_rate == target_rate {
         return samples.to_vec();
@@ -138,7 +125,6 @@ pub fn resample_linear(samples: &[f32], src_rate: u32, target_rate: u32) -> Vec<
     output
 }
 
-/// Convert stereo interleaved samples to mono by averaging channels.
 pub fn stereo_to_mono(samples: &[f32], channels: u16) -> Vec<f32> {
     if channels == 1 {
         return samples.to_vec();
@@ -159,7 +145,6 @@ pub fn stereo_to_mono(samples: &[f32], channels: u16) -> Vec<f32> {
     mono
 }
 
-/// Load a WAV file and return mono 16kHz f32 samples.
 pub fn load_wav_file(path: &std::path::Path, verbose: bool) -> Result<Vec<f32>> {
     let reader = hound::WavReader::open(path)
         .with_context(|| format!("Failed to open WAV file: {}", path.display()))?;
@@ -175,7 +160,6 @@ pub fn load_wav_file(path: &std::path::Path, verbose: bool) -> Result<Vec<f32>> 
         );
     }
 
-    // Read all samples as f32
     let raw_samples: Vec<f32> = match spec.sample_format {
         hound::SampleFormat::Int => {
             let max_val = (1u32 << (spec.bits_per_sample - 1)) as f32;
@@ -204,10 +188,8 @@ pub fn load_wav_file(path: &std::path::Path, verbose: bool) -> Result<Vec<f32>> 
             .collect::<Result<Vec<_>>>()?,
     };
 
-    // Convert to mono
     let mono = stereo_to_mono(&raw_samples, channels);
 
-    // Resample to 16kHz
     let resampled = resample_linear(&mono, sample_rate, TARGET_SAMPLE_RATE);
 
     if verbose {
@@ -226,6 +208,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mono_conversion_preserves_channel_order_and_ignores_partial_frames() {
+        assert_eq!(stereo_to_mono(&[0.25, -0.5], 1), vec![0.25, -0.5]);
+        assert_eq!(stereo_to_mono(&[1.0, 2.0, 3.0, 4.0], 3), vec![2.0]);
+        assert!(stereo_to_mono(&[], 2).is_empty());
+    }
+
+    #[test]
     fn test_resample_same_rate() {
         let input = vec![1.0, 2.0, 3.0];
         let output = resample_linear(&input, 16000, 16000);
@@ -236,9 +225,7 @@ mod tests {
     fn test_resample_upsample() {
         let input = vec![0.0, 1.0];
         let output = resample_linear(&input, 8000, 16000);
-        // 2x upsample: should produce ~4 samples with interpolation
         assert!(output.len() >= 3);
-        // First sample should be 0
         assert!((output[0]).abs() < 1e-6);
     }
 

@@ -1,33 +1,23 @@
+use crate::integrity::file_matches_sha256;
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
-/// How download progress is reported to the caller.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ProgressMode {
-    /// Human-readable indicatif progress bars on stderr (interactive use).
     Bar,
-    /// Machine-readable newline-delimited JSON events on stdout, designed for
-    /// host applications (e.g. Superkeet) to drive a native progress UI.
     Json,
 }
 
-/// Minimum interval between JSON `fileProgress` events, to avoid flooding the
-/// consumer with one event per network chunk.
 const JSON_PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Emit a single newline-delimited JSON event to stdout.
-///
-/// Rust's stdout is line-buffered, so each event is flushed on its trailing
-/// newline — consumers receive events promptly as the download proceeds.
 fn emit_event(value: serde_json::Value) {
     println!("{value}");
 }
@@ -35,16 +25,12 @@ fn emit_event(value: serde_json::Value) {
 const HF_BASE_URL: &str = "https://huggingface.co";
 const USER_AGENT: &str = concat!("parakeet-cli/", env!("CARGO_PKG_VERSION"));
 
-/// HuggingFace repo for FP16 quantized model files (v3).
 const HF_REPO_FP16: &str = "grikdotnet/parakeet-tdt-0.6b-fp16";
 const HF_REPO_FP16_REVISION: &str = "dc9871ec5ad84a420940077e76e8741b3609bf8b";
 
-/// HuggingFace repo for INT8 model files + vocab + config (v3).
 const HF_REPO_V3: &str = "istupakov/parakeet-tdt-0.6b-v3-onnx";
 const HF_REPO_V3_REVISION: &str = "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce";
 
-/// Files needed for the FP16 model.
-/// Encoder + decoder come from the FP16 repo; vocab + config from the v3 repo.
 struct DownloadFile {
     repo: &'static str,
     revision: &'static str,
@@ -79,7 +65,6 @@ const FP16_FILES: &[DownloadFile] = &[
     },
 ];
 
-/// Files needed for the INT8 quantized model.
 const INT8_FILES: &[DownloadFile] = &[
     DownloadFile {
         repo: HF_REPO_V3,
@@ -337,33 +322,6 @@ async fn download_file(
     Ok(())
 }
 
-fn file_matches_sha256(path: &Path, expected_sha256: &str) -> Result<bool> {
-    let file = std::fs::File::open(path).with_context(|| {
-        format!(
-            "Failed to open file for checksum verification: {}",
-            path.display()
-        )
-    })?;
-    let mut reader = std::io::BufReader::new(file);
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 64 * 1024];
-
-    loop {
-        let read = reader.read(&mut buf).with_context(|| {
-            format!(
-                "Failed to read file for checksum verification: {}",
-                path.display()
-            )
-        })?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buf[..read]);
-    }
-
-    Ok(format!("{:x}", hasher.finalize()) == expected_sha256)
-}
-
 fn temp_path(path: &Path) -> PathBuf {
     let mut tmp = path.to_path_buf();
     let name = tmp
@@ -375,9 +333,6 @@ fn temp_path(path: &Path) -> PathBuf {
     tmp
 }
 
-/// Check if model files exist at the given directory.
-///
-/// Checks for FP16, INT8, or legacy FP32 files (in priority order).
 pub fn model_exists(model_dir: &Path) -> bool {
     let has_fp16 = model_dir.join("encoder-model.fp16.onnx").exists()
         && model_dir.join("decoder_joint-model.fp16.onnx").exists();

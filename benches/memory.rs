@@ -1,11 +1,3 @@
-/// Memory usage benchmarks.
-///
-/// Measures allocation patterns and data sizes during each pipeline
-/// stage. Each benchmark computes and returns the estimated memory
-/// footprint alongside the actual computation, so Criterion can
-/// track both timing and allocation regressions.
-///
-/// Requires model files for encoder/decoder memory tests.
 mod common;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
@@ -25,21 +17,15 @@ fn bench_memory_mel(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(label), &audio, |b, samples| {
             b.iter(|| {
-                // Compute mel and measure output size
                 let features = compute_mel_spectrogram(samples, &config);
                 let shape = features.shape();
                 let mel_bytes = shape[0] * shape[1] * std::mem::size_of::<f32>();
 
-                // Also account for intermediate allocations:
-                // - preemphasis output: n_samples * 4 bytes
-                // - FFT buffers: n_fft * 4 * 2 (input + complex output)
-                // - filterbank: n_mels * (n_fft/2+1) * 4 bytes
                 let preemphasis_bytes = n_samples * 4;
                 let fft_bytes = 512 * 4 * 2;
                 let filterbank_bytes = 128 * 257 * 4;
                 let estimated_peak = mel_bytes + preemphasis_bytes + fft_bytes + filterbank_bytes;
 
-                // Return the feature array to prevent optimization
                 (features, estimated_peak)
             });
         });
@@ -61,7 +47,6 @@ fn bench_memory_audio_buffer(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(label), &audio, |b, samples| {
             b.iter(|| {
                 let mut buffer = AudioBuffer::new(60.0);
-                // Simulate streaming: push in 512-sample chunks (like VAD)
                 for chunk in samples.chunks(512) {
                     buffer.push(chunk);
                 }
@@ -103,10 +88,8 @@ fn bench_memory_encoder(c: &mut Criterion) {
                 let (enc_output, enc_shape, _lengths) =
                     encoder.encode(feats).expect("Encoder failed");
 
-                // Report data sizes for memory analysis
                 let input_bytes = feats.shape()[0] * feats.shape()[1] * std::mem::size_of::<f32>();
                 let output_bytes = enc_output.len() * std::mem::size_of::<f32>();
-                // Transposed input buffer allocated inside encode()
                 let transpose_bytes =
                     feats.shape()[0] * feats.shape()[1] * std::mem::size_of::<f32>();
 
@@ -145,7 +128,6 @@ fn bench_memory_full_pipeline(c: &mut Criterion) {
             b.iter(|| {
                 let features = compute_mel_spectrogram(samples, &config);
 
-                // Track sizes
                 let audio_bytes = samples.len() * std::mem::size_of::<f32>();
                 let mel_bytes =
                     features.shape()[0] * features.shape()[1] * std::mem::size_of::<f32>();

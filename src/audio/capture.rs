@@ -1,29 +1,17 @@
-/// Audio capture from microphone via cpal.
-///
-/// Provides a streaming audio source that captures from the system's
-/// default or named input device, converts to mono f32 at the device's
-/// native sample rate, and sends chunks through a crossbeam channel.
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{Receiver, Sender};
 
-/// Audio chunk sent from the capture callback to the consumer.
 pub struct AudioChunk {
-    /// Mono f32 samples at the capture sample rate.
     pub samples: Vec<f32>,
 }
 
-/// Handle to an active audio capture stream.
 pub struct CaptureStream {
-    /// The underlying cpal stream (keeps it alive).
     _stream: cpal::Stream,
-    /// Receiver for audio chunks.
     pub receiver: Receiver<AudioChunk>,
-    /// The sample rate of the captured audio.
     pub sample_rate: u32,
 }
 
-/// Print a formatted list of audio input devices.
 pub fn print_input_devices() -> Result<()> {
     let host = cpal::default_host();
 
@@ -62,7 +50,6 @@ pub fn print_input_devices() -> Result<()> {
     Ok(())
 }
 
-/// Find an input device by name, or return the default.
 fn find_input_device(device_name: &Option<String>) -> Result<cpal::Device> {
     let host = cpal::default_host();
 
@@ -90,10 +77,6 @@ fn find_input_device(device_name: &Option<String>) -> Result<cpal::Device> {
     }
 }
 
-/// Start capturing audio from the specified (or default) input device.
-///
-/// Returns a CaptureStream handle. Audio flows through the channel as
-/// AudioChunk messages. The stream runs until the CaptureStream is dropped.
 pub fn start_capture(device_name: &Option<String>) -> Result<CaptureStream> {
     let device = find_input_device(device_name)?;
     let dev_name = device.name().unwrap_or_else(|_| "<unknown>".to_string());
@@ -111,8 +94,6 @@ pub fn start_capture(device_name: &Option<String>) -> Result<CaptureStream> {
         dev_name, channels, sample_rate, sample_format
     );
 
-    // Channel for sending audio chunks from callback to consumer.
-    // Bounded to ~2 seconds of buffering at typical chunk sizes to avoid unbounded growth.
     let (tx, rx): (Sender<AudioChunk>, Receiver<AudioChunk>) = crossbeam_channel::bounded(200);
 
     let ch = channels;
@@ -187,29 +168,11 @@ where
             config,
             move |data: &[T], _: &cpal::InputCallbackInfo| {
                 let samples: Vec<f32> = data.iter().map(|&sample| convert(sample)).collect();
-                let mono = to_mono_f32(&samples, channels);
+                let mono = super::resample::stereo_to_mono(&samples, channels);
                 let _ = tx.try_send(AudioChunk { samples: mono });
             },
             |err| eprintln!("Audio capture error: {err}"),
             None,
         )
         .map_err(|e| anyhow::anyhow!("Failed to build input stream: {e}"))
-}
-
-/// Convert interleaved multi-channel audio to mono by averaging.
-fn to_mono_f32(data: &[f32], channels: u16) -> Vec<f32> {
-    if channels == 1 {
-        return data.to_vec();
-    }
-    let ch = channels as usize;
-    let n_frames = data.len() / ch;
-    let mut mono = Vec::with_capacity(n_frames);
-    for i in 0..n_frames {
-        let mut sum = 0.0f32;
-        for c in 0..ch {
-            sum += data[i * ch + c];
-        }
-        mono.push(sum / ch as f32);
-    }
-    mono
 }

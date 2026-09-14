@@ -1,13 +1,3 @@
-/// Live streaming transcription pipeline.
-///
-/// Pipeline: mic capture -> resample to 16kHz -> VAD segmentation -> transcribe utterances
-///
-/// The listen loop runs on the main thread:
-/// 1. Audio callback pushes chunks through a crossbeam channel
-/// 2. Main thread reads chunks, feeds them to the resampler, then to VAD
-/// 3. When VAD detects speech, audio is accumulated in a buffer
-/// 4. When VAD detects end of speech, the buffered audio is transcribed
-/// 5. Transcription result is printed to stdout
 use anyhow::Result;
 use std::collections::VecDeque;
 use std::path::Path;
@@ -21,7 +11,6 @@ use crate::vad::{self, SileroVad, VAD_CHUNK_SAMPLES, VadEvent, VadSegmenter, Vad
 
 const MAX_UTTERANCE_SECS: f32 = 60.0;
 
-/// Compute RMS (root mean square) of a sample buffer.
 fn rms(samples: &[f32]) -> f32 {
     if samples.is_empty() {
         return 0.0;
@@ -51,9 +40,6 @@ pub struct ListenConfig<'a> {
     pub single_utterance: bool,
 }
 
-/// Run the live listen pipeline.
-///
-/// This blocks until Ctrl-C is pressed.
 pub async fn run_listen(config: ListenConfig<'_>) -> Result<()> {
     let ListenConfig {
         device,
@@ -67,10 +53,8 @@ pub async fn run_listen(config: ListenConfig<'_>) -> Result<()> {
         single_utterance,
     } = config;
 
-    // Download VAD model if needed
     let vad_path = vad::ensure_vad_model(model_dir).await?;
 
-    // Load Parakeet model
     if verbose {
         eprintln!("Loading Parakeet model...");
     }
@@ -79,14 +63,12 @@ pub async fn run_listen(config: ListenConfig<'_>) -> Result<()> {
         eprintln!();
     }
 
-    // Load Silero VAD
     let mut vad_model = SileroVad::load(&vad_path, verbose)?;
     let mut segmenter = VadSegmenter::new(vad_threshold, silence_ms);
     if verbose {
         eprintln!();
     }
 
-    // Start audio capture
     let capture = audio::start_capture(device)?;
     let capture_rate = capture.sample_rate;
     eprintln!();
@@ -101,7 +83,6 @@ pub async fn run_listen(config: ListenConfig<'_>) -> Result<()> {
     }
     eprintln!();
 
-    // Set up Ctrl-C handler
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     ctrlc::set_handler(move || {
@@ -109,35 +90,30 @@ pub async fn run_listen(config: ListenConfig<'_>) -> Result<()> {
     })
     .map_err(|e| anyhow::anyhow!("Failed to set Ctrl-C handler: {e}"))?;
 
-    // Audio buffer for accumulating speech utterances
     let mut utterance_buffer = AudioBuffer::new(MAX_UTTERANCE_SECS);
     let mut resampler = audio::StreamingResampler::new(capture_rate, audio::TARGET_SAMPLE_RATE);
 
-    // VAD processing buffer: accumulate resampled audio, process in 512-sample chunks
     let mut vad_buf: Vec<f32> = Vec::new();
     let mut preroll = VecDeque::new();
     let preroll_samples = audio::PREROLL_SAMPLES;
 
     let mel_config = audio::MelConfig::default();
 
-    // Debug state
     let mut total_capture_samples: u64 = 0;
     let mut total_vad_chunks: u64 = 0;
-    let mut debug_vad_chunk_count: u64 = 0; // counter for periodic debug output
-    let mut max_speech_prob: f32 = 0.0; // track max prob between debug prints
+    let mut debug_vad_chunk_count: u64 = 0;
+    let mut max_speech_prob: f32 = 0.0;
     let mut peak_speech_prob: f32 = 0.0;
-    let mut warned_silent = false; // one-time warning for silent audio
+    let mut warned_silent = false;
     let mut warned_low_vad = false;
     let mut capture_rms_accum: f32 = 0.0;
     let mut capture_rms_count: u32 = 0;
     let mut capture_rms_total: f32 = 0.0;
     let mut capture_chunk_total: u64 = 0;
 
-    // Print debug every N VAD chunks (~500ms = ~16 chunks at 32ms each)
     let debug_interval: u64 = 16;
 
     while running.load(Ordering::SeqCst) {
-        // Receive audio chunk with a timeout so we can check the running flag
         let chunk = match capture
             .receiver
             .recv_timeout(std::time::Duration::from_millis(100))
@@ -150,7 +126,6 @@ pub async fn run_listen(config: ListenConfig<'_>) -> Result<()> {
             }
         };
 
-        // Debug: track capture-level audio
         if debug {
             let chunk_rms = rms(&chunk.samples);
             capture_rms_accum += chunk_rms;
@@ -160,12 +135,9 @@ pub async fn run_listen(config: ListenConfig<'_>) -> Result<()> {
             total_capture_samples += chunk.samples.len() as u64;
         }
 
-        // Resample from capture rate to 16kHz using a continuous stream.
         let resampled = resampler.process(&chunk.samples);
 
-        // Debug: check for silent audio early on
         if debug && !warned_silent && total_capture_samples > (capture_rate as u64) {
-            // After ~1 second of audio, check if it's silent
             let avg_rms = if capture_rms_count > 0 {
                 capture_rms_accum / capture_rms_count as f32
             } else {
@@ -183,20 +155,16 @@ pub async fn run_listen(config: ListenConfig<'_>) -> Result<()> {
             warned_silent = true;
         }
 
-        // Feed resampled audio to VAD buffer
         vad_buf.extend_from_slice(&resampled);
 
-        // Process complete VAD chunks (512 samples = 32ms each)
         while vad_buf.len() >= VAD_CHUNK_SAMPLES {
             let vad_chunk: Vec<f32> = vad_buf.drain(..VAD_CHUNK_SAMPLES).collect();
 
-            // Run VAD
             let speech_prob = vad_model.process_chunk(&vad_chunk)?;
 
             total_vad_chunks += 1;
             debug_vad_chunk_count += 1;
 
-            // Track max prob for debug interval
             if speech_prob > max_speech_prob {
                 max_speech_prob = speech_prob;
             }
@@ -204,7 +172,6 @@ pub async fn run_listen(config: ListenConfig<'_>) -> Result<()> {
                 peak_speech_prob = speech_prob;
             }
 
-            // Debug: periodic output every ~500ms
             if debug && debug_vad_chunk_count >= debug_interval {
                 let chunk_rms = rms(&vad_chunk);
                 let avg_capture_rms = if capture_rms_count > 0 {
@@ -249,7 +216,6 @@ pub async fn run_listen(config: ListenConfig<'_>) -> Result<()> {
 
             audio::push_preroll(&mut preroll, &vad_chunk, preroll_samples);
 
-            // Run segmenter
             let event = segmenter.process(speech_prob);
 
             match event {
@@ -278,11 +244,9 @@ pub async fn run_listen(config: ListenConfig<'_>) -> Result<()> {
                     }
                     eprint!("\r[listening] Transcribing {:.1}s utterance...  ", duration);
 
-                    // Transcribe the accumulated utterance
                     let samples = utterance_buffer.drain();
 
                     if samples.len() > audio::MIN_UTTERANCE_SAMPLES {
-                        // At least 0.1s of audio
                         let features = audio::compute_mel_spectrogram(&samples, &mel_config);
 
                         if debug {
@@ -296,7 +260,6 @@ pub async fn run_listen(config: ListenConfig<'_>) -> Result<()> {
                         match model.transcribe(&features) {
                             Ok(text) => {
                                 if !text.trim().is_empty() {
-                                    // Clear the status line and print transcription
                                     eprint!("\r                                              \r");
                                     println!("{}", text.trim());
 
@@ -306,8 +269,6 @@ pub async fn run_listen(config: ListenConfig<'_>) -> Result<()> {
                                         }
                                     }
 
-                                    // In single-utterance mode, exit after the first
-                                    // successful transcription
                                     if single_utterance {
                                         return Ok(());
                                     }
@@ -329,7 +290,6 @@ pub async fn run_listen(config: ListenConfig<'_>) -> Result<()> {
                     eprint!("\r[listening] Ready...                         ");
                 }
                 VadEvent::None => {
-                    // If we're in the Speaking state, accumulate audio
                     if segmenter.state() == VadState::Speaking {
                         utterance_buffer.push(&vad_chunk);
                     }

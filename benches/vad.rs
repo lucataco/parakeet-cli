@@ -1,10 +1,3 @@
-/// Benchmarks for Silero Voice Activity Detection.
-///
-/// Measures per-chunk inference latency and streaming throughput.
-/// The VAD processes 512-sample chunks (32ms at 16kHz), so it must
-/// be faster than 32ms per chunk to keep up with realtime audio.
-///
-/// Also benchmarks the pure VadSegmenter state machine (no ONNX).
 mod common;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -24,7 +17,6 @@ fn bench_vad_single_chunk(c: &mut Criterion) {
 
     let mut vad = SileroVad::load(&vad_path, false).expect("Failed to load Silero VAD");
 
-    // Single 32ms chunk
     let chunk = vec![0.0f32; VAD_CHUNK_SAMPLES];
 
     c.bench_function("vad_single_chunk_32ms", |b| {
@@ -72,20 +64,14 @@ fn bench_vad_stream(c: &mut Criterion) {
 }
 
 fn bench_vad_segmenter_throughput(c: &mut Criterion) {
-    // Pure state machine benchmark — no ONNX, no model dependency.
-    // Simulates a stream of speech probabilities through the segmenter.
-    let n_chunks = 10_000; // ~320 seconds worth of VAD decisions
+    let n_chunks = 10_000;
 
-    // Create a realistic probability sequence:
-    // silence -> speech -> silence -> speech -> ...
     let mut probs = Vec::with_capacity(n_chunks);
     for i in 0..n_chunks {
-        let cycle = i % 200; // ~6.4s cycle
+        let cycle = i % 200;
         if cycle < 100 {
-            // Speech phase: high probability
             probs.push(0.85);
         } else {
-            // Silence phase: low probability
             probs.push(0.05);
         }
     }
@@ -111,9 +97,6 @@ fn bench_vad_segmenter_throughput(c: &mut Criterion) {
 }
 
 fn bench_vad_latency_vs_realtime(c: &mut Criterion) {
-    // Benchmark that explicitly compares VAD chunk processing time
-    // against the 32ms realtime budget. This helps determine if
-    // VAD can keep up with live audio.
     if !common::vad_model_available() {
         return;
     }
@@ -123,7 +106,6 @@ fn bench_vad_latency_vs_realtime(c: &mut Criterion) {
 
     let mut vad = SileroVad::load(&vad_path, false).expect("Failed to load Silero VAD");
 
-    // Mix of silence and speech-like content
     let speech_chunk: Vec<f32> = (0..VAD_CHUNK_SAMPLES)
         .map(|i| {
             let t = i as f32 / 16_000.0;

@@ -1,8 +1,3 @@
-/// Benchmarks for audio resampling and format conversion.
-///
-/// Tests both one-shot and streaming resampling paths, plus
-/// stereo-to-mono conversion. These run on the CPU with no
-/// model dependencies.
 mod common;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -14,7 +9,6 @@ fn bench_resample_one_shot(c: &mut Criterion) {
     let durations: &[(f32, &str)] = &[(1.0, "1s"), (10.0, "10s"), (60.0, "60s")];
 
     for &(duration, label) in durations {
-        // Generate audio at 48kHz (a common source rate)
         let n_samples = (duration * 48_000.0) as usize;
         let audio: Vec<f32> = (0..n_samples)
             .map(|i| {
@@ -39,7 +33,6 @@ fn bench_resample_streaming(c: &mut Criterion) {
 
     let durations: &[(f32, &str)] = &[(1.0, "1s"), (10.0, "10s")];
 
-    // Typical audio callback chunk size: ~10ms at 48kHz = 480 samples
     let chunk_size = 480;
 
     for &(duration, label) in durations {
@@ -88,7 +81,6 @@ fn bench_stereo_to_mono(c: &mut Criterion) {
 }
 
 fn bench_resample_passthrough(c: &mut Criterion) {
-    // Benchmark the same-rate (16k -> 16k) passthrough to verify it's ~free
     let audio = common::generate_sine_audio(10.0, 440.0);
     c.bench_function("resample_passthrough_16k_10s", |b| {
         b.iter(|| {

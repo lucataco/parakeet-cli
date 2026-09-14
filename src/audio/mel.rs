@@ -1,20 +1,6 @@
-/// 128-bin log-mel spectrogram computation matching NeMo's AudioToMelSpectrogramPreprocessor.
-///
-/// Parameters (matching NeMo defaults for Parakeet TDT):
-/// - Sample rate: 16000 Hz
-/// - Window size: 0.025s = 400 samples
-/// - Hop length: 0.01s = 160 samples
-/// - FFT size: 512
-/// - Mel bins: 128
-/// - Mel range: 0 - 8000 Hz
-/// - Window: Hann
-/// - Preemphasis: 0.97
-/// - Log with floor of 1e-10 (ln, not log10)
-/// - Per-feature normalization (zero mean, unit variance)
 use ndarray::Array2;
 use realfft::RealFftPlanner;
 
-/// NeMo-compatible mel spectrogram parameters.
 pub struct MelConfig {
     pub sample_rate: usize,
     pub n_fft: usize,
@@ -43,21 +29,15 @@ impl Default for MelConfig {
     }
 }
 
-/// Compute 128-bin log-mel spectrogram from 16kHz mono audio.
-///
-/// Returns Array2<f32> of shape [time_steps, n_mels] where each row is one frame.
 pub fn compute_mel_spectrogram(samples: &[f32], config: &MelConfig) -> Array2<f32> {
-    // 1. Apply preemphasis and center padding to match NeMo's STFT framing.
     let audio = apply_preemphasis(samples, config.preemphasis);
     if audio.is_empty() {
         return Array2::zeros((0, config.n_mels));
     }
     let audio = center_pad(&audio, config.n_fft / 2);
 
-    // 2. Build Hann window
     let window = hann_window(config.win_length);
 
-    // 3. Build mel filterbank
     let filterbank = mel_filterbank(
         config.n_fft,
         config.n_mels,
@@ -66,7 +46,6 @@ pub fn compute_mel_spectrogram(samples: &[f32], config: &MelConfig) -> Array2<f3
         config.fmax,
     );
 
-    // 4. STFT + power spectrum + mel filtering + log
     let n_frames = if audio.len() >= config.win_length {
         (audio.len() - config.win_length) / config.hop_length + 1
     } else {
@@ -83,17 +62,14 @@ pub fn compute_mel_spectrogram(samples: &[f32], config: &MelConfig) -> Array2<f3
     let mut result = Array2::zeros((n_frames, config.n_mels));
     let n_fft_bins = config.n_fft / 2 + 1;
 
-    // Scratch buffer for FFT
     let mut fft_input = vec![0.0f32; config.n_fft];
     let mut spectrum = fft.make_output_vec();
 
     for frame_idx in 0..n_frames {
         let start = frame_idx * config.hop_length;
 
-        // Zero-pad the FFT input buffer
         fft_input.iter_mut().for_each(|x| *x = 0.0);
 
-        // Apply window. Center padding is already included in `audio`.
         for i in 0..config.win_length {
             let sample_idx = start + i;
             if sample_idx < audio.len() {
@@ -101,16 +77,13 @@ pub fn compute_mel_spectrogram(samples: &[f32], config: &MelConfig) -> Array2<f3
             }
         }
 
-        // FFT
         fft.process(&mut fft_input, &mut spectrum).unwrap();
 
-        // Power spectrum: |X(f)|^2
         let mut power = vec![0.0f32; n_fft_bins];
         for (i, c) in spectrum.iter().enumerate() {
             power[i] = c.re * c.re + c.im * c.im;
         }
 
-        // Apply mel filterbank and log
         for mel_idx in 0..config.n_mels {
             let mut mel_energy: f32 = 0.0;
             for (weight, power) in filterbank[mel_idx].iter().zip(&power) {
@@ -120,13 +93,11 @@ pub fn compute_mel_spectrogram(samples: &[f32], config: &MelConfig) -> Array2<f3
         }
     }
 
-    // 5. Per-feature normalization (zero mean, unit variance)
     normalize_features(&mut result);
 
     result
 }
 
-/// Apply preemphasis filter: y[n] = x[n] - alpha * x[n-1]
 fn apply_preemphasis(samples: &[f32], alpha: f32) -> Vec<f32> {
     if samples.is_empty() {
         return Vec::new();
@@ -147,7 +118,6 @@ fn center_pad(samples: &[f32], pad: usize) -> Vec<f32> {
     padded
 }
 
-/// Generate a Hann window of the given length.
 fn hann_window(length: usize) -> Vec<f32> {
     (0..length)
         .map(|i| {
@@ -157,19 +127,14 @@ fn hann_window(length: usize) -> Vec<f32> {
         .collect()
 }
 
-/// Convert frequency in Hz to mel scale (HTK formula).
 fn hz_to_mel(freq: f64) -> f64 {
     2595.0 * (1.0 + freq / 700.0).log10()
 }
 
-/// Convert mel scale to frequency in Hz (HTK formula).
 fn mel_to_hz(mel: f64) -> f64 {
     700.0 * (10.0_f64.powf(mel / 2595.0) - 1.0)
 }
 
-/// Build a mel filterbank matrix of shape [n_mels, n_fft/2+1].
-///
-/// Each row is a triangular filter in the frequency domain.
 fn mel_filterbank(
     n_fft: usize,
     n_mels: usize,
@@ -179,11 +144,9 @@ fn mel_filterbank(
 ) -> Vec<Vec<f32>> {
     let n_fft_bins = n_fft / 2 + 1;
 
-    // Mel-spaced center frequencies
     let mel_min = hz_to_mel(fmin);
     let mel_max = hz_to_mel(fmax);
 
-    // n_mels + 2 points (including edges)
     let n_points = n_mels + 2;
     let mel_points: Vec<f64> = (0..n_points)
         .map(|i| mel_min + (mel_max - mel_min) * i as f64 / (n_points - 1) as f64)
@@ -191,7 +154,6 @@ fn mel_filterbank(
 
     let hz_points: Vec<f64> = mel_points.iter().map(|&m| mel_to_hz(m)).collect();
 
-    // Convert Hz to FFT bin indices (fractional)
     let bin_points: Vec<f64> = hz_points
         .iter()
         .map(|&f| f * n_fft as f64 / sample_rate)
@@ -224,8 +186,6 @@ fn mel_filterbank(
     filterbank
 }
 
-/// Per-feature (per-mel-bin) normalization: zero mean, unit variance.
-/// This matches NeMo's `normalize: "per_feature"` setting.
 fn normalize_features(features: &mut Array2<f32>) {
     let n_frames = features.shape()[0];
     let n_mels = features.shape()[1];
@@ -235,14 +195,12 @@ fn normalize_features(features: &mut Array2<f32>) {
     }
 
     for mel in 0..n_mels {
-        // Compute mean
         let mut sum = 0.0f64;
         for t in 0..n_frames {
             sum += features[[t, mel]] as f64;
         }
         let mean = sum / n_frames as f64;
 
-        // Compute variance
         let mut var_sum = 0.0f64;
         for t in 0..n_frames {
             let diff = features[[t, mel]] as f64 - mean;
@@ -250,7 +208,6 @@ fn normalize_features(features: &mut Array2<f32>) {
         }
         let std = (var_sum / n_frames as f64).sqrt().max(1e-5);
 
-        // Normalize
         for t in 0..n_frames {
             features[[t, mel]] = ((features[[t, mel]] as f64 - mean) / std) as f32;
         }
@@ -274,9 +231,7 @@ mod tests {
     fn test_hann_window() {
         let w = hann_window(400);
         assert_eq!(w.len(), 400);
-        // First sample should be ~0 (periodic Hann)
         assert!(w[0].abs() < 1e-6);
-        // Middle should be ~1
         assert!((w[200] - 1.0).abs() < 0.01);
     }
 
@@ -292,17 +247,15 @@ mod tests {
     fn test_mel_filterbank_shape() {
         let fb = mel_filterbank(512, 128, 16000.0, 0.0, 8000.0);
         assert_eq!(fb.len(), 128);
-        assert_eq!(fb[0].len(), 257); // 512/2 + 1
+        assert_eq!(fb[0].len(), 257);
     }
 
     #[test]
     fn test_compute_mel_basic() {
-        // 1 second of 16kHz silence
         let samples = vec![0.0f32; 16000];
         let config = MelConfig::default();
         let mel = compute_mel_spectrogram(&samples, &config);
 
-        // Center padding adds n_fft / 2 samples on both sides.
         assert_eq!(mel.shape()[0], 101);
         assert_eq!(mel.shape()[1], 128);
     }

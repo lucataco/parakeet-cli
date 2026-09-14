@@ -1,48 +1,30 @@
-/// Silero Voice Activity Detection (VAD) via ONNX Runtime.
-///
-/// Uses the Silero VAD v5 model to detect speech segments in audio.
-/// The model processes 512-sample chunks (32ms at 16kHz) and outputs
-/// a speech probability for each chunk.
-///
-/// The VAD maintains internal state (LSTM hidden/cell states) that
-/// must be carried forward between chunks for accurate detection.
+use crate::integrity::file_matches_sha256;
 use anyhow::{Context, Result};
 use ort::session::Session;
 use ort::value::{Tensor, ValueType};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
-/// Silero VAD model URL (v5, ONNX format).
 pub const SILERO_VAD_URL: &str = "https://raw.githubusercontent.com/snakers4/silero-vad/980b17e9d56463e51393a8d92ded473f1b17896a/src/silero_vad/data/silero_vad.onnx";
 const SILERO_VAD_SHA256: &str = "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3";
 const USER_AGENT: &str = concat!("parakeet-cli/", env!("CARGO_PKG_VERSION"));
 
-/// Silero VAD chunk size: 512 samples at 16kHz = 32ms.
 pub const VAD_CHUNK_SAMPLES: usize = 512;
-/// Silero streaming context size at 16kHz.
 pub const VAD_CONTEXT_SAMPLES: usize = 64;
 
-/// Sample rate expected by Silero VAD.
 pub const VAD_SAMPLE_RATE: u32 = 16000;
 
-/// Silero VAD model wrapper.
 pub struct SileroVad {
     session: Session,
-    /// LSTM hidden state [2, 1, 128] (Silero VAD v5)
     state: Vec<f32>,
-    /// Hidden state dimension (detected from model)
     state_dim: usize,
-    /// Sample rate as i64 for the model input
     sr: i64,
-    /// Rolling context prepended to each frame for streaming inference.
     context: Vec<f32>,
-    /// Emit actual runtime I/O tensor shapes once for debugging.
     logged_io_shapes: bool,
     verbose: bool,
 }
 
 impl SileroVad {
-    /// Load Silero VAD from an ONNX file.
     pub fn load(path: &std::path::Path, verbose: bool) -> Result<Self> {
         let mut builder = Session::builder().map_err(|e| anyhow::anyhow!("{e}"))?;
         let session = builder
@@ -78,7 +60,6 @@ impl SileroVad {
             );
         }
 
-        // Initial hidden state: zeros [2, 1, state_dim]
         let state = vec![0.0f32; 2 * state_dim];
 
         Ok(Self {
@@ -92,16 +73,10 @@ impl SileroVad {
         })
     }
 
-    /// Reset the internal LSTM state.
-    /// Call this when starting a new audio stream or after long pauses.
     pub fn reset(&mut self) {
         reset_state_and_context(&mut self.state, self.state_dim, &mut self.context);
     }
 
-    /// Process a single 512-sample chunk and return speech probability.
-    ///
-    /// The internal state is updated automatically.
-    /// Returns a probability in [0, 1] where higher = more likely speech.
     pub fn process_chunk(&mut self, chunk: &[f32]) -> Result<f32> {
         if chunk.len() != VAD_CHUNK_SAMPLES {
             anyhow::bail!(
@@ -114,16 +89,13 @@ impl SileroVad {
         let model_input = build_model_input(&self.context, chunk);
         let model_input_len = model_input.len();
 
-        // Input tensor: [1, context + chunk_size]
         let input_tensor = Tensor::from_array(([1usize, model_input_len], model_input.clone()))
             .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-        // State tensor: [2, 1, state_dim]
         let state_tensor =
             Tensor::from_array(([2usize, 1usize, self.state_dim], self.state.clone()))
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-        // Silero expects an int64 scalar sample-rate tensor.
         let sr_tensor =
             Tensor::from_array(((), vec![self.sr])).map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -144,7 +116,6 @@ impl SileroVad {
             .map_err(|e| anyhow::anyhow!("{e}"))
             .context("Silero VAD inference failed")?;
 
-        // Output 0: speech probability [1, 1]
         let (_prob_shape, prob_data) = outputs["output"]
             .try_extract_tensor::<f32>()
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -152,7 +123,6 @@ impl SileroVad {
             .first()
             .context("Silero VAD returned an empty probability tensor")?;
 
-        // Output 1: updated state [2, 1, 64]
         let (_state_shape, state_data) = outputs["stateN"]
             .try_extract_tensor::<f32>()
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -240,7 +210,6 @@ fn describe_tensor_shape(dtype: &ValueType) -> String {
     }
 }
 
-/// Download the Silero VAD model if it doesn't exist.
 pub async fn ensure_vad_model(model_dir: &std::path::Path) -> Result<std::path::PathBuf> {
     let vad_path = model_dir.join("silero_vad.onnx");
 
@@ -287,7 +256,6 @@ pub async fn ensure_vad_model(model_dir: &std::path::Path) -> Result<std::path::
         );
     }
 
-    // Atomic write
     let tmp_path = model_dir.join(".silero_vad.onnx.tmp");
     let _ = tokio::fs::remove_file(&tmp_path).await;
     let mut file = tokio::fs::File::create(&tmp_path).await?;
@@ -305,86 +273,33 @@ pub async fn ensure_vad_model(model_dir: &std::path::Path) -> Result<std::path::
     Ok(vad_path)
 }
 
-fn file_matches_sha256(path: &std::path::Path, expected_sha256: &str) -> Result<bool> {
-    use std::io::Read;
-
-    let file = std::fs::File::open(path).with_context(|| {
-        format!(
-            "Failed to open file for checksum verification: {}",
-            path.display()
-        )
-    })?;
-    let mut reader = std::io::BufReader::new(file);
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 64 * 1024];
-
-    loop {
-        let read = reader.read(&mut buf).with_context(|| {
-            format!(
-                "Failed to read file for checksum verification: {}",
-                path.display()
-            )
-        })?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buf[..read]);
-    }
-
-    Ok(format!("{:x}", hasher.finalize()) == expected_sha256)
-}
-
-/// State machine for VAD-based speech segmentation.
-///
-/// Tracks speech/silence transitions and determines when a complete
-/// utterance has been detected (speech followed by sufficient silence).
 pub struct VadSegmenter {
-    /// Speech probability threshold
     threshold: f32,
-    /// Number of consecutive silence chunks needed to end an utterance
     silence_chunks_needed: usize,
-    /// Current state
     state: VadState,
-    /// Count of consecutive silence chunks during speech
     silence_count: usize,
-    /// Minimum speech chunks to consider valid (filters noise bursts)
     min_speech_chunks: usize,
-    /// Count of speech chunks in current utterance
     speech_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VadState {
-    /// Waiting for speech to begin.
     Silence,
-    /// Speech detected, accumulating audio.
     Speaking,
 }
 
-/// Event emitted by the VAD segmenter.
 #[derive(Debug)]
 pub enum VadEvent {
-    /// No state change — continue as-is.
     None,
-    /// Speech has started — begin accumulating audio.
     SpeechStart,
-    /// Speech has ended — the utterance is complete, transcribe it.
     SpeechEnd,
 }
 
 impl VadSegmenter {
-    /// Create a new VAD segmenter.
-    ///
-    /// # Arguments
-    /// * `threshold` - Speech probability threshold (0.0 - 1.0)
-    /// * `silence_ms` - Silence duration in ms to end an utterance
     pub fn new(threshold: f32, silence_ms: u64) -> Self {
-        // Convert silence duration to number of VAD chunks
-        // Each chunk is 512 samples at 16kHz = 32ms
         let chunk_ms = (VAD_CHUNK_SAMPLES as f64 / VAD_SAMPLE_RATE as f64 * 1000.0) as u64;
         let silence_chunks_needed = silence_ms.div_ceil(chunk_ms).max(1) as usize;
 
-        // Minimum ~100ms of speech to be considered valid
         let min_speech_chunks = (100 / chunk_ms).max(1) as usize;
 
         Self {
@@ -397,7 +312,6 @@ impl VadSegmenter {
         }
     }
 
-    /// Process a speech probability and return the resulting event.
     pub fn process(&mut self, speech_prob: f32) -> VadEvent {
         let is_speech = speech_prob >= self.threshold;
 
@@ -427,7 +341,6 @@ impl VadSegmenter {
                         if was_valid {
                             VadEvent::SpeechEnd
                         } else {
-                            // Too short, was probably noise
                             VadEvent::None
                         }
                     } else {
@@ -438,14 +351,12 @@ impl VadSegmenter {
         }
     }
 
-    /// Reset the segmenter state.
     pub fn reset(&mut self) {
         self.state = VadState::Silence;
         self.silence_count = 0;
         self.speech_count = 0;
     }
 
-    /// Get the current state.
     pub fn state(&self) -> VadState {
         self.state
     }
@@ -468,26 +379,21 @@ mod tests {
     fn test_vad_segmenter_basic() {
         let mut seg = VadSegmenter::new(0.5, 500);
 
-        // Silence
         assert!(matches!(seg.process(0.1), VadEvent::None));
         assert_eq!(seg.state(), VadState::Silence);
 
-        // Speech starts
         assert!(matches!(seg.process(0.8), VadEvent::SpeechStart));
         assert_eq!(seg.state(), VadState::Speaking);
 
-        // Continue speaking for enough chunks to be valid
         for _ in 0..10 {
             assert!(matches!(seg.process(0.9), VadEvent::None));
         }
 
-        // Silence begins but not long enough
         for _ in 0..5 {
             assert!(matches!(seg.process(0.1), VadEvent::None));
             assert_eq!(seg.state(), VadState::Speaking);
         }
 
-        // Enough silence to trigger end (500ms / 32ms = ~16 chunks)
         let mut ended = false;
         for _ in 0..20 {
             if matches!(seg.process(0.1), VadEvent::SpeechEnd) {

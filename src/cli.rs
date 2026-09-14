@@ -11,7 +11,7 @@ use std::path::PathBuf;
                   INT8 quantized by default for smaller downloads on Apple Silicon."
 )]
 pub struct Cli {
-    /// Enable verbose output (model details, tensor shapes, timing stats)
+    #[arg(help = "Enable verbose output (model details, tensor shapes, timing stats)")]
     #[arg(long, short, global = true)]
     pub verbose: bool,
 
@@ -21,107 +21,113 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Download model weights from HuggingFace
+    #[command(about = "Print the machine-readable daemon protocol version")]
+    ProtocolVersion,
+    #[command(about = "Download model weights from HuggingFace")]
     Download {
-        /// Directory to store model files
+        #[arg(help = "Directory to store model files")]
         #[arg(long, default_value_os_t = default_model_dir())]
         model_dir: PathBuf,
 
-        /// Download INT8 quantized model (652 MB, smallest). This is the default.
+        #[arg(help = "Download INT8 quantized model (652 MB, smallest). This is the default")]
         #[arg(long, hide = true)]
         int8: bool,
 
-        /// Download FP16 quantized model (1.2 GB) instead of the default INT8 weights.
+        #[arg(help = "Download FP16 quantized model (1.2 GB) instead of the default INT8 weights")]
         #[arg(long, conflicts_with = "int8")]
         fp16: bool,
 
-        /// Progress output: "auto" for human-readable bars, "json" for
-        /// machine-readable newline-delimited JSON events on stdout.
+        #[arg(
+            help = "Progress output: \"auto\" for human-readable bars, \"json\" for machine-readable newline-delimited JSON events on stdout"
+        )]
         #[arg(long, default_value = "auto", value_parser = ["auto", "json"])]
         progress: String,
     },
 
-    /// Transcribe an audio file
+    #[command(about = "Transcribe an audio file")]
     Transcribe {
-        /// Path to the audio file (WAV)
+        #[arg(help = "Replay through the same bounded session pipeline as microphone capture")]
+        #[arg(long)]
+        session: bool,
+        #[arg(help = "Path to the audio file (WAV)")]
         file: PathBuf,
 
-        /// Directory containing model files
+        #[arg(help = "Directory containing model files")]
         #[arg(long, default_value_os_t = default_model_dir())]
         model_dir: PathBuf,
 
-        /// Output format
+        #[arg(help = "Output format")]
         #[arg(long, default_value = "text", value_parser = ["text", "json"])]
         format: String,
 
-        /// Enable CoreML acceleration (experimental, may be slower with FP32 models)
+        #[arg(help = "Enable CoreML acceleration (experimental, may be slower with FP32 models)")]
         #[arg(long)]
         coreml: bool,
     },
 
-    /// Stream transcription from microphone
+    #[command(about = "Stream transcription from microphone")]
     Listen {
-        /// Audio input device name (use 'devices' command to list)
+        #[arg(help = "Audio input device name (use 'devices' command to list)")]
         #[arg(long)]
         device: Option<String>,
 
-        /// Directory containing model files
+        #[arg(help = "Directory containing model files")]
         #[arg(long, default_value_os_t = default_model_dir())]
         model_dir: PathBuf,
 
-        /// VAD speech probability threshold (0.0 - 1.0)
+        #[arg(help = "VAD speech probability threshold (0.0 - 1.0)")]
         #[arg(long, default_value = "0.5", value_parser = parse_vad_threshold)]
         vad_threshold: f32,
 
-        /// Silence duration in ms to end an utterance
+        #[arg(help = "Silence duration in ms to end an utterance")]
         #[arg(long, default_value = "1500")]
         silence_ms: u64,
 
-        /// Also copy transcription to clipboard
+        #[arg(help = "Also copy transcription to clipboard")]
         #[arg(long)]
         clipboard: bool,
 
-        /// Print debug info: audio levels, VAD probabilities, state transitions
+        #[arg(help = "Print debug info: audio levels, VAD probabilities, state transitions")]
         #[arg(long)]
         debug: bool,
 
-        /// Enable CoreML acceleration (experimental, may be slower with FP32 models)
+        #[arg(help = "Enable CoreML acceleration (experimental, may be slower with FP32 models)")]
         #[arg(long)]
         coreml: bool,
 
-        /// Capture a single utterance and exit (useful for scripting/voice agents)
+        #[arg(help = "Capture a single utterance and exit (useful for scripting/voice agents)")]
         #[arg(long)]
         single_utterance: bool,
     },
 
-    /// Run as a daemon controllable via Unix socket or signals
+    #[command(about = "Run as a daemon controllable via Unix socket or signals")]
     Serve {
-        /// Path to the Unix socket
+        #[arg(help = "Path to the Unix socket")]
         #[arg(long, default_value_os_t = default_socket_path())]
         socket: PathBuf,
 
-        /// Path to write PID file
+        #[arg(help = "Path to write PID file")]
         #[arg(long, default_value_os_t = default_pid_file_path())]
         pid_file: PathBuf,
 
-        /// Audio input device name
+        #[arg(help = "Audio input device name")]
         #[arg(long)]
         device: Option<String>,
 
-        /// Directory containing model files
+        #[arg(help = "Directory containing model files")]
         #[arg(long, default_value_os_t = default_model_dir())]
         model_dir: PathBuf,
 
-        /// Copy transcription to clipboard
+        #[arg(help = "Copy transcription to clipboard")]
         #[arg(long)]
         clipboard: bool,
 
-        /// Enable CoreML acceleration (experimental, may be slower with FP32 models)
+        #[arg(help = "Enable CoreML acceleration (experimental, may be slower with FP32 models)")]
         #[arg(long)]
         coreml: bool,
     },
 
-    /// List available audio input devices
+    #[command(about = "List available audio input devices")]
     Devices,
 }
 

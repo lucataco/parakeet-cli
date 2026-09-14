@@ -9,6 +9,7 @@ async fn main() -> Result<()> {
     let verbose = cli.verbose;
 
     match cli.command {
+        Commands::ProtocolVersion => println!("{}", parakeet_cli::DAEMON_PROTOCOL_VERSION),
         Commands::Download {
             model_dir,
             int8: _,
@@ -24,12 +25,21 @@ async fn main() -> Result<()> {
         }
 
         Commands::Transcribe {
+            session,
             file,
             model_dir,
             format,
             coreml,
         } => {
-            // Verify model exists
+            if session {
+                let result = serve::replay(&file, &model_dir, coreml).await?;
+                if format == "json" {
+                    println!("{}", result.completion("replay"));
+                } else {
+                    println!("{}", result.text);
+                }
+                return Ok(());
+            }
             if !download::model_exists(&model_dir) {
                 eprintln!(
                     "Model not found at: {}\nRun `parakeet download` first.",
@@ -38,13 +48,11 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
 
-            // Verify input file exists
             if !file.exists() {
                 eprintln!("Audio file not found: {}", file.display());
                 std::process::exit(1);
             }
 
-            // Load audio file
             let start_load = std::time::Instant::now();
             let samples = audio::load_wav_file(&file, verbose)?;
             if verbose {
@@ -52,7 +60,6 @@ async fn main() -> Result<()> {
                 eprintln!();
             }
 
-            // Compute mel spectrogram
             let start_mel = std::time::Instant::now();
             let mel_config = audio::MelConfig::default();
             let features = audio::compute_mel_spectrogram(&samples, &mel_config);
@@ -66,7 +73,6 @@ async fn main() -> Result<()> {
                 eprintln!();
             }
 
-            // Load model
             let start_model = std::time::Instant::now();
             let mut model = model::ParakeetModel::load(&model_dir, coreml, verbose)?;
             if verbose {
@@ -77,7 +83,6 @@ async fn main() -> Result<()> {
                 eprintln!();
             }
 
-            // Transcribe
             let start_infer = std::time::Instant::now();
             let text = model.transcribe(&features)?;
             let infer_time = start_infer.elapsed().as_secs_f64();
@@ -93,7 +98,6 @@ async fn main() -> Result<()> {
                     println!("{}", serde_json::to_string_pretty(&output)?);
                 }
                 _ => {
-                    // "text" format (default)
                     println!("{text}");
                 }
             }
@@ -119,7 +123,6 @@ async fn main() -> Result<()> {
             coreml,
             single_utterance,
         } => {
-            // Verify model exists
             if !download::model_exists(&model_dir) {
                 eprintln!(
                     "Model not found at: {}\nRun `parakeet download` first.",
@@ -150,7 +153,6 @@ async fn main() -> Result<()> {
             clipboard,
             coreml,
         } => {
-            // Verify model exists
             if !download::model_exists(&model_dir) {
                 eprintln!(
                     "Model not found at: {}\nRun `parakeet download` first.",
