@@ -9,6 +9,10 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 pub(super) struct Command {
     pub command: String,
     pub session_id: Option<String>,
+    /// Protocol 2: ask `start` to stream interim `partial` events while the
+    /// session records. Absent or false keeps protocol-1 output exactly.
+    #[serde(default)]
+    pub partials: bool,
 }
 
 impl Command {
@@ -16,6 +20,7 @@ impl Command {
         Self {
             command: command.into(),
             session_id: None,
+            partials: false,
         }
     }
 }
@@ -63,6 +68,35 @@ pub(super) fn session_started(session_id: &str) -> Value {
 
 pub(super) fn transcribing(session_id: &str) -> Value {
     json!({"type": "transcribing", "session_id": session_id})
+}
+
+/// Interim text for a session that is still recording. `sequence` increases by
+/// one per emitted partial so consumers can drop stale arrivals; `truncated`
+/// means the preview window left out older uncommitted audio, so `text` may
+/// skip a stretch between its committed prefix and its newest words.
+pub(crate) fn partial(session_id: &str, text: &str, sequence: u64, truncated: bool) -> Value {
+    json!({"type": "partial", "session_id": session_id, "text": text,
+        "sequence": sequence, "truncated": truncated})
+}
+
+/// Turns preview decodes into `partial` events, numbering them and skipping
+/// repeats so an unchanged transcript never produces a new line.
+#[derive(Default)]
+pub(crate) struct PartialEmitter {
+    sequence: u64,
+    last: Option<(String, bool)>,
+}
+
+impl PartialEmitter {
+    pub fn next(&mut self, session_id: &str, text: String, truncated: bool) -> Option<Value> {
+        if text.trim().is_empty() || self.last.as_ref() == Some(&(text.clone(), truncated)) {
+            return None;
+        }
+        self.sequence += 1;
+        let event = partial(session_id, &text, self.sequence, truncated);
+        self.last = Some((text, truncated));
+        Some(event)
+    }
 }
 
 pub(crate) fn completion(result: &SessionResult, session_id: &str) -> Value {
@@ -174,6 +208,51 @@ mod tests {
         );
         assert!(parse_command(b"{invalid}").is_err());
         assert_eq!(parse_command(b" STATUS ").unwrap().command, "STATUS");
+    }
+
+    #[test]
+    fn partials_are_opt_in_per_start_command() {
+        let plain = parse_command(br#"{"command":"start","session_id":"a"}"#).unwrap();
+        assert!(
+            !plain.partials,
+            "protocol-1 clients never asked and never receive partials"
+        );
+        let wanted =
+            parse_command(br#"{"command":"start","session_id":"a","partials":true}"#).unwrap();
+        assert!(wanted.partials);
+        let declined = parse_command(br#"{"command":"start","partials":false}"#).unwrap();
+        assert!(!declined.partials);
+        assert!(!Command::bare("start").partials);
+    }
+
+    #[test]
+    fn partial_events_are_numbered_deduplicated_and_never_empty() {
+        let mut emitter = PartialEmitter::default();
+        assert!(emitter.next("s", "".into(), false).is_none());
+        assert!(emitter.next("s", "   ".into(), false).is_none());
+        let first = emitter.next("s", "open the".into(), false).unwrap();
+        assert_eq!(first["type"], "partial");
+        assert_eq!(first["session_id"], "s");
+        assert_eq!(first["text"], "open the");
+        assert_eq!(first["sequence"], 1);
+        assert_eq!(first["truncated"], false);
+        assert!(
+            emitter.next("s", "open the".into(), false).is_none(),
+            "unchanged text is not repeated"
+        );
+        let second = emitter.next("s", "open the notes".into(), false).unwrap();
+        assert_eq!(second["sequence"], 2);
+        let flagged = emitter.next("s", "open the notes".into(), true).unwrap();
+        assert_eq!(flagged["sequence"], 3);
+        assert_eq!(
+            flagged["truncated"], true,
+            "a change in the window flag is worth reporting"
+        );
+        assert!(
+            !partial("s", "first\nsecond", 1, false)
+                .to_string()
+                .contains('\n')
+        );
     }
 
     #[tokio::test]

@@ -64,6 +64,15 @@ impl Recognizer {
         result.inference_time += started.elapsed().as_secs_f64();
     }
 
+    /// Recognizes uncommitted audio for an interim preview. Failures and panics
+    /// are swallowed: a preview is advisory and never counts toward the
+    /// session's loss accounting or its final transcript.
+    pub fn preview(&mut self, segment: Segment) -> Option<Vec<usize>> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.transcribe(segment)))
+            .ok()
+            .and_then(|outcome| outcome.ok())
+    }
+
     pub fn decode(&self, tokens: &[usize]) -> String {
         self.model.tokenizer.decode(tokens)
     }

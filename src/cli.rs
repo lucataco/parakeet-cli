@@ -49,6 +49,12 @@ pub enum Commands {
         #[arg(help = "Replay through the same bounded session pipeline as microphone capture")]
         #[arg(long)]
         session: bool,
+
+        #[arg(
+            help = "With --session: also print the interim `partial` NDJSON events the daemon would stream, before the final result"
+        )]
+        #[arg(long, requires = "session")]
+        partials: bool,
         #[arg(help = "Path to the audio file (WAV)")]
         file: PathBuf,
 

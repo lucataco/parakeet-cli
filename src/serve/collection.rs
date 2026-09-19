@@ -1,7 +1,7 @@
 use super::{RUN, protocol};
 use crate::{
     audio::StreamingResampler,
-    segments::{Segment, Segmenter},
+    segments::{PREVIEW_MAX_OWNED_SAMPLES, Preview, PreviewCadence, Segment, Segmenter},
     session_capture::Capture,
     vad::{SileroVad, VAD_CHUNK_SAMPLES, VadEvent, VadSegmenter},
 };
@@ -69,11 +69,34 @@ pub(super) fn enqueue_segment(segment: Segment, tx: &Sender<Collected>, dropped:
     }
 }
 
+/// Offers the newest uncommitted audio for an interim decode when the cadence
+/// allows. Previews travel on their own single-slot channel: a slow worker
+/// simply misses a tick, and a preview can never displace a real segment or
+/// register as dropped audio.
+pub(super) fn offer_preview(
+    cadence: &mut PreviewCadence,
+    segmenter: &Segmenter,
+    new_samples: usize,
+    previews: Option<&Sender<Preview>>,
+) -> bool {
+    let Some(previews) = previews else {
+        return false;
+    };
+    if !cadence.observe(new_samples, segmenter.owned_pending()) {
+        return false;
+    }
+    match segmenter.preview(PREVIEW_MAX_OWNED_SAMPLES) {
+        Some(preview) => previews.try_send(preview).is_ok(),
+        None => false,
+    }
+}
+
 pub(super) fn collect(
     device: Option<String>,
     job_id: String,
     control: Arc<AtomicU8>,
     tx: Sender<Collected>,
+    previews: Option<Sender<Preview>>,
     started: tokio::sync::oneshot::Sender<std::result::Result<(), String>>,
     mut capture_end: Option<CaptureEnd>,
 ) {
@@ -93,6 +116,7 @@ pub(super) fn collect(
     let _ = started.send(Ok(()));
     let mut resampler = StreamingResampler::new(capture.sample_rate, 16000);
     let mut segmenter = Segmenter::default();
+    let mut cadence = PreviewCadence::default();
     let mut dropped = 0;
     let mut error = None;
     let capture_start = std::time::Instant::now();
@@ -101,6 +125,7 @@ pub(super) fn collect(
             Ok(samples) => {
                 let resampled = resampler.process(&samples);
                 enqueue_segments(&mut segmenter, &resampled, &tx, &mut dropped);
+                offer_preview(&mut cadence, &segmenter, resampled.len(), previews.as_ref());
                 if let Some(detector) = capture_end.as_mut() {
                     match detector.process(&resampled) {
                         Ok(true) => break,
@@ -126,6 +151,9 @@ pub(super) fn collect(
             break;
         }
     }
+    // No previews once the user has stopped: the worker should spend its time
+    // on the final transcript, and closing the channel tells it so.
+    drop(previews);
     if let Err(stop_error) = capture.stop() {
         error = Some(format!("Could not stop capture cleanly: {stop_error}"));
     }

@@ -26,13 +26,14 @@ async fn main() -> Result<()> {
 
         Commands::Transcribe {
             session,
+            partials,
             file,
             model_dir,
             format,
             coreml,
         } => {
             if session {
-                let result = serve::replay(&file, &model_dir, coreml).await?;
+                let result = serve::replay(&file, &model_dir, coreml, partials).await?;
                 if format == "json" {
                     println!("{}", result.completion("replay"));
                 } else {

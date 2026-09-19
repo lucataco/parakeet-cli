@@ -11,4 +11,4 @@ pub mod session_capture;
 pub mod session_recognition;
 pub mod vad;
 
-pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
+pub const DAEMON_PROTOCOL_VERSION: u32 = 2;

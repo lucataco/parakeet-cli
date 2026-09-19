@@ -279,9 +279,10 @@ src/
 The daemon's `DaemonContext` handles session commands and shares control state.
 Its child modules separate collection, protocol framing/builders, runtime-file
 ownership and inference delivery. `integrity.rs` provides shared model checksum
-verification. See [daemon protocol 1](docs/session-protocol.md) for events and
-`transcribe --session` replay. Ordinary file transcription and `listen` retain
-their existing APIs and processing paths.
+verification. See [daemon protocol 2](docs/session-protocol.md) for events,
+opt-in interim `partial` text, and `transcribe --session [--partials]` replay.
+Ordinary file transcription and `listen` retain their existing APIs and
+processing paths.
 
 ### Inference Pipeline
 
