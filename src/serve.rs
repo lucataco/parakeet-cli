@@ -339,10 +339,18 @@ mod tests {
             panic!("missing tail")
         };
         let expected = crate::audio::resample::resample_linear(&input, 48000, 16000);
-        assert_eq!(segment.samples.len(), expected.len());
-        for (actual, expected) in segment.samples.iter().zip(expected) {
+        assert_eq!(
+            segment.samples.len(),
+            expected.len() + crate::segments::PREVIEW_TAIL_SILENCE_SAMPLES
+        );
+        for (actual, expected) in segment.samples.iter().zip(&expected) {
             assert!((actual - expected).abs() < 1e-6);
         }
+        assert!(
+            segment.samples[expected.len()..]
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
         assert_eq!(dropped, 0);
     }
 
@@ -446,7 +454,9 @@ mod tests {
             enqueue_segments(&mut segmenter, &[0.1; 16000], &tx, &mut dropped);
         }
         let final_segment = segmenter.finish().unwrap();
-        let tail_count = final_segment.owned_end - final_segment.owned_start;
+        let tail_count = final_segment.owned_end
+            - final_segment.owned_start
+            - crate::segments::PREVIEW_TAIL_SILENCE_SAMPLES;
         let Collected::Segment(first) = rx.recv().unwrap() else {
             panic!("missing first segment")
         };

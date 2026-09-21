@@ -10,12 +10,17 @@ pub const PREVIEW_MIN_SAMPLES: usize = 6_400;
 /// covers only the newest audio and is reported as truncated, which keeps the
 /// per-tick cost bounded however long the utterance grows.
 pub const PREVIEW_MAX_OWNED_SAMPLES: usize = 16_000 * 15;
-/// Silence appended to every preview (0.3 s). Audio cut mid-phoneme makes the
-/// decoder invent a tail ("open the notes and I'm not going to be able to do
-/// it" for 0.75 s of "open the notes app"); a short silent run-out lets it
-/// finish the last word instead. Measured: 0.3 s removes the effect entirely
-/// and more gives no further benefit.
+/// Silence appended to every preview and to the last committed segment (0.3 s).
+/// Audio cut mid-phoneme makes the decoder invent a tail ("open the notes and
+/// I'm not going to be able to do it" for 0.75 s of "open the notes app"); a
+/// short silent run-out lets it finish the last word instead. Measured: 0.3 s
+/// of digital zeros after the last speech removes the effect; analog room tone
+/// does not substitute. More than 0.3 s after a clean cut gives no further
+/// benefit and can hallucinate.
 pub const PREVIEW_TAIL_SILENCE_SAMPLES: usize = 4_800;
+/// Samples below this amplitude are trailing room tone, not speech. Through-air
+/// MacBook rest is ~0.002 peak; voiced speech on that path is typically >0.05.
+const TRAILING_ROOM_TONE: f32 = 0.01;
 
 #[derive(Debug)]
 pub struct Segment {
@@ -59,9 +64,14 @@ impl Segmenter {
     }
 
     pub fn finish(&mut self) -> Option<Segment> {
-        let samples = std::mem::take(&mut self.pending);
+        let mut samples = std::mem::take(&mut self.pending);
         let start = std::mem::take(&mut self.left_context);
-        (samples.len() > start).then_some(Segment {
+        if samples.len() <= start {
+            return None;
+        }
+        samples.truncate(owned_end_after_trimming_room_tone(&samples, start));
+        samples.extend(std::iter::repeat_n(0.0, PREVIEW_TAIL_SILENCE_SAMPLES));
+        Some(Segment {
             owned_start: start,
             owned_end: samples.len(),
             samples,
@@ -99,6 +109,19 @@ impl Segmenter {
             },
             truncated: owned > max_owned,
         })
+    }
+}
+
+fn owned_end_after_trimming_room_tone(samples: &[f32], owned_start: usize) -> usize {
+    let owned_start = owned_start.min(samples.len());
+    match samples[owned_start..]
+        .iter()
+        .rposition(|sample| sample.abs() >= TRAILING_ROOM_TONE)
+    {
+        // Keep the last loud sample only. Analog hangover after it is room tone
+        // that makes the decoder invent a tail; digital zeros follow instead.
+        Some(relative) => owned_start + relative + 1,
+        None => samples.len(),
     }
 }
 
@@ -145,11 +168,18 @@ mod tests {
             }
         }
         let segment = segmenter.finish().unwrap();
-        for sample in &segment.samples[segment.owned_start..segment.owned_end] {
+        let audio_end = segment.owned_end - PREVIEW_TAIL_SILENCE_SAMPLES;
+        for sample in &segment.samples[segment.owned_start..audio_end] {
             assert_eq!(*sample, next as f32);
             next += 1;
         }
         assert_eq!(next, count);
+        assert!(
+            segment.samples[audio_end..]
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+        assert_eq!(segment.owned_end, segment.samples.len());
         assert!(segmenter.finish().is_none());
     }
 
@@ -157,7 +187,40 @@ mod tests {
     fn immediate_stop_keeps_sub_vad_frame_tail() {
         let mut segmenter = Segmenter::default();
         assert!(segmenter.push(&[0.2; 501]).is_empty());
-        assert_eq!(segmenter.finish().unwrap().samples.len(), 501);
+        let tail = segmenter.finish().unwrap();
+        assert_eq!(
+            tail.samples.len(),
+            501 + PREVIEW_TAIL_SILENCE_SAMPLES,
+            "a sub-window stop still owns its samples, plus the silent run-out the decoder needs"
+        );
+        assert_eq!(&tail.samples[..501], &[0.2; 501]);
+        assert!(tail.samples[501..].iter().all(|sample| *sample == 0.0));
+    }
+
+    #[test]
+    fn finish_drops_trailing_room_tone_then_appends_silent_runout() {
+        let mut segmenter = Segmenter::default();
+        let mut audio = vec![0.2; 1_600];
+        audio.extend(std::iter::repeat_n(0.001, 8_000));
+        assert!(segmenter.push(&audio).is_empty());
+        let tail = segmenter.finish().unwrap();
+        assert_eq!(
+            tail.samples.len(),
+            1_600 + PREVIEW_TAIL_SILENCE_SAMPLES,
+            "room tone after the last loud sample is dropped; digital zeros are appended"
+        );
+        assert_eq!(&tail.samples[..1_600], &[0.2; 1_600]);
+        assert!(tail.samples[1_600..].iter().all(|sample| *sample == 0.0));
+        assert_eq!(tail.owned_end, tail.samples.len());
+    }
+
+    #[test]
+    fn finish_keeps_a_quiet_take_that_never_crosses_room_tone() {
+        let mut segmenter = Segmenter::default();
+        assert!(segmenter.push(&[0.002; 501]).is_empty());
+        let tail = segmenter.finish().unwrap();
+        assert_eq!(&tail.samples[..501], &[0.002; 501]);
+        assert_eq!(tail.samples.len(), 501 + PREVIEW_TAIL_SILENCE_SAMPLES);
     }
 
     #[test]
@@ -177,10 +240,15 @@ mod tests {
         assert_eq!(&preview.segment.samples[..24_000], &audio[..]);
         assert!(preview.segment.samples[24_000..].iter().all(|s| *s == 0.0));
         assert_eq!(segmenter.owned_pending(), 24_000);
-        // The final segment is exactly what it would have been without the preview.
+        // The final audio is exactly what it would have been without the preview;
+        // stop then appends the same silent run-out previews already use.
         let tail = segmenter.finish().unwrap();
-        assert_eq!(tail.samples, audio);
-        assert_eq!((tail.owned_start, tail.owned_end), (0, 24_000));
+        assert_eq!(&tail.samples[..24_000], &audio[..]);
+        assert_eq!(tail.samples.len(), 24_000 + PREVIEW_TAIL_SILENCE_SAMPLES);
+        assert_eq!(
+            (tail.owned_start, tail.owned_end),
+            (0, 24_000 + PREVIEW_TAIL_SILENCE_SAMPLES)
+        );
     }
 
     #[test]
