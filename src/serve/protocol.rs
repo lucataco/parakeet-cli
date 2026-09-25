@@ -74,9 +74,21 @@ pub(super) fn transcribing(session_id: &str) -> Value {
 /// one per emitted partial so consumers can drop stale arrivals; `truncated`
 /// means the preview window left out older uncommitted audio, so `text` may
 /// skip a stretch between its committed prefix and its newest words.
-pub(crate) fn partial(session_id: &str, text: &str, sequence: u64, truncated: bool) -> Value {
+/// `audio_ms` is how much of the recording the preview had heard.
+pub(crate) fn partial(
+    session_id: &str,
+    text: &str,
+    sequence: u64,
+    truncated: bool,
+    audio_ms: u64,
+) -> Value {
     json!({"type": "partial", "session_id": session_id, "text": text,
-        "sequence": sequence, "truncated": truncated})
+        "sequence": sequence, "truncated": truncated, "audio_ms": audio_ms})
+}
+
+/// 16 kHz samples to whole milliseconds.
+pub(crate) fn samples_to_ms(samples: usize) -> u64 {
+    (samples as u64 * 1_000) / 16_000
 }
 
 /// Turns preview decodes into `partial` events, numbering them and skipping
@@ -88,12 +100,18 @@ pub(crate) struct PartialEmitter {
 }
 
 impl PartialEmitter {
-    pub fn next(&mut self, session_id: &str, text: String, truncated: bool) -> Option<Value> {
+    pub fn next(
+        &mut self,
+        session_id: &str,
+        text: String,
+        truncated: bool,
+        audio_ms: u64,
+    ) -> Option<Value> {
         if text.trim().is_empty() || self.last.as_ref() == Some(&(text.clone(), truncated)) {
             return None;
         }
         self.sequence += 1;
-        let event = partial(session_id, &text, self.sequence, truncated);
+        let event = partial(session_id, &text, self.sequence, truncated, audio_ms);
         self.last = Some((text, truncated));
         Some(event)
     }
@@ -228,28 +246,34 @@ mod tests {
     #[test]
     fn partial_events_are_numbered_deduplicated_and_never_empty() {
         let mut emitter = PartialEmitter::default();
-        assert!(emitter.next("s", "".into(), false).is_none());
-        assert!(emitter.next("s", "   ".into(), false).is_none());
-        let first = emitter.next("s", "open the".into(), false).unwrap();
+        assert!(emitter.next("s", "".into(), false, 500).is_none());
+        assert!(emitter.next("s", "   ".into(), false, 500).is_none());
+        let first = emitter.next("s", "open the".into(), false, 500).unwrap();
         assert_eq!(first["type"], "partial");
         assert_eq!(first["session_id"], "s");
         assert_eq!(first["text"], "open the");
         assert_eq!(first["sequence"], 1);
         assert_eq!(first["truncated"], false);
+        assert_eq!(first["audio_ms"], 500);
         assert!(
-            emitter.next("s", "open the".into(), false).is_none(),
+            emitter.next("s", "open the".into(), false, 500).is_none(),
             "unchanged text is not repeated"
         );
-        let second = emitter.next("s", "open the notes".into(), false).unwrap();
+        let second = emitter
+            .next("s", "open the notes".into(), false, 500)
+            .unwrap();
         assert_eq!(second["sequence"], 2);
-        let flagged = emitter.next("s", "open the notes".into(), true).unwrap();
+        let flagged = emitter
+            .next("s", "open the notes".into(), true, 500)
+            .unwrap();
         assert_eq!(flagged["sequence"], 3);
         assert_eq!(
             flagged["truncated"], true,
             "a change in the window flag is worth reporting"
         );
+        assert_eq!(samples_to_ms(8_000), 500);
         assert!(
-            !partial("s", "first\nsecond", 1, false)
+            !partial("s", "first\nsecond", 1, false, 0)
                 .to_string()
                 .contains('\n')
         );

@@ -44,7 +44,8 @@ the result on its socket, including `transcript_status` and loss counters.
 ## Interim text (`partial`)
 
 When `start` carries `"partials": true`, the engine streams its current best
-reading of the recording roughly every 0.75 s of captured audio, once at least
+reading of the recording roughly every 0.5 s of captured audio (0.75 s before
+v0.1.9), once at least
 0.4 s is pending. Partials are **advisory**: they are decoded from audio that no
 committed segment owns yet, and the final `complete` text comes only from the
 committed pipeline described below, which partials never alter. A client must
@@ -55,6 +56,9 @@ change or disappear in the next one.
   fresh decode of the uncommitted tail. Each partial replaces the previous one.
 - `sequence` starts at 1 and increases by one per emitted partial within a
   session. Unchanged text is not repeated.
+- `audio_ms` (v0.1.9+) is how much of the recording the preview had heard, in
+  milliseconds from `start`. It lines interim text up with the audio; clients
+  that don't need it can ignore it.
 - `truncated` is true when the uncommitted tail exceeded 15 s and only its
   newest 15 s were decoded, so `text` may skip a stretch between its committed
   prefix and its newest words. Below 15 s it is always false.

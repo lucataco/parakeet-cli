@@ -287,11 +287,12 @@ pub async fn replay(
         if partials && cadence.observe(chunk.len(), segmenter.owned_pending()) {
             if let Some(preview) = segmenter.preview(PREVIEW_MAX_OWNED_SAMPLES) {
                 let truncated = preview.truncated;
+                let audio_ms = protocol::samples_to_ms(preview.audio_samples);
                 if let Some(tokens) = recognizer.preview(preview.segment) {
                     let mut running = result.tokens.clone();
                     running.extend(tokens);
                     let text = recognizer.decode(&running);
-                    if let Some(event) = emitter.next("replay", text, truncated) {
+                    if let Some(event) = emitter.next("replay", text, truncated, audio_ms) {
                         protocol::emit(event);
                     }
                 }
@@ -416,22 +417,24 @@ mod tests {
                 offered += 1;
             }
         }
-        // Two seconds of audio: previews at 0.75 s and 1.5 s reach the slot, but
-        // the second one waits behind the first until the worker drains it.
+        // Two seconds of audio: previews at 0.5, 1.0, 1.5 and 2.0 s reach the
+        // slot, but each later one waits behind the first until the worker
+        // drains it.
         assert_eq!(offered, 1);
         assert_eq!(
             20 * 1_600 / PREVIEW_INTERVAL_SAMPLES,
-            2,
-            "cadence would have fired twice"
+            4,
+            "cadence would have fired four times"
         );
         let preview = preview_rx.recv().unwrap();
         assert!(!preview.truncated);
-        // The first tick fires on the chunk that crosses the interval: 8 × 1600
+        // The first tick fires on the chunk that crosses the interval: 5 × 1600
         // samples, plus the silent run-out every preview carries.
         assert_eq!(
             preview.segment.owned_end - preview.segment.owned_start,
-            8 * 1_600 + crate::segments::PREVIEW_TAIL_SILENCE_SAMPLES
+            5 * 1_600 + crate::segments::PREVIEW_TAIL_SILENCE_SAMPLES
         );
+        assert_eq!(preview.audio_samples, 5 * 1_600);
         assert!(
             segment_rx.try_recv().is_err(),
             "no committed segment below one core span"

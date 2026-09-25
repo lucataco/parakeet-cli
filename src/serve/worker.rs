@@ -110,13 +110,14 @@ fn emit_partial(
     partials: &mut protocol::PartialEmitter,
 ) {
     let truncated = preview.truncated;
+    let audio_ms = protocol::samples_to_ms(preview.audio_samples);
     let Some(tokens) = recognizer.preview(preview.segment) else {
         return;
     };
     let mut running = result.tokens.clone();
     running.extend(tokens);
     let text = recognizer.decode(&running);
-    if let Some(event) = partials.next(session_id, text, truncated) {
+    if let Some(event) = partials.next(session_id, text, truncated, audio_ms) {
         protocol::emit(event);
     }
 }

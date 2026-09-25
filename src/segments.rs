@@ -2,8 +2,10 @@ pub const FRAME_SAMPLES: usize = 1280;
 pub const CORE_SAMPLES: usize = FRAME_SAMPLES * 320;
 pub const CONTEXT_SAMPLES: usize = FRAME_SAMPLES * 8;
 
-/// How much new audio must arrive between two interim previews (0.75 s).
-pub const PREVIEW_INTERVAL_SAMPLES: usize = 12_000;
+/// How much new audio must arrive between two interim previews (0.5 s).
+/// Voice-command clients act on interim text while the user is still
+/// speaking, so this bounds how stale their view of the utterance can be.
+pub const PREVIEW_INTERVAL_SAMPLES: usize = 8_000;
 /// Audio that must be pending before the first preview is worth running (0.4 s).
 pub const PREVIEW_MIN_SAMPLES: usize = 6_400;
 /// Longest owned span a preview re-encodes (15 s). Beyond this the preview
@@ -38,16 +40,21 @@ pub struct Preview {
     /// True when older pending audio was left out to bound the encode cost, so
     /// the preview's text may be missing a stretch before its first word.
     pub truncated: bool,
+    /// Session audio received when the preview was taken (16 kHz samples), so
+    /// a client can line interim text up with the recording.
+    pub audio_samples: usize,
 }
 
 #[derive(Default)]
 pub struct Segmenter {
     pending: Vec<f32>,
     left_context: usize,
+    received: usize,
 }
 
 impl Segmenter {
     pub fn push(&mut self, samples: &[f32]) -> Vec<Segment> {
+        self.received += samples.len();
         self.pending.extend_from_slice(samples);
         let mut ready = Vec::new();
         while self.pending.len() >= self.left_context + CORE_SAMPLES + CONTEXT_SAMPLES {
@@ -108,6 +115,7 @@ impl Segmenter {
                 samples,
             },
             truncated: owned > max_owned,
+            audio_samples: self.received,
         })
     }
 }
@@ -319,7 +327,7 @@ mod tests {
         assert!(!cadence.observe(PREVIEW_INTERVAL_SAMPLES - 1, 100_000));
         assert!(cadence.observe(1, 100_000));
         // The count restarts from zero at each tick (no carry), so with 100 ms
-        // chunks a tick lands on every eighth chunk.
+        // chunks a tick lands on every fifth chunk.
         let mut ticks = 0;
         for _ in 0..100 {
             if cadence.observe(1_600, 100_000) {
@@ -327,7 +335,7 @@ mod tests {
             }
         }
         let chunks_per_tick = PREVIEW_INTERVAL_SAMPLES.div_ceil(1_600);
-        assert_eq!(chunks_per_tick, 8);
+        assert_eq!(chunks_per_tick, 5);
         assert_eq!(ticks, 100 / chunks_per_tick);
     }
 }
