@@ -83,6 +83,29 @@ file through the same cadence and preview code and prints the `partial` lines
 before the `complete` line, so interim output can be checked without a
 microphone.
 
+## Keeping the microphone warm between sessions
+
+A client that records one utterance after another (a listening session) loses
+whatever is said between `stop` and the next `start`: the engine refuses a new
+`start` until the previous session's `complete`, and opening the device takes
+time too. Since v0.1.10, `{"command":"stop","session_id":…,"keep_warm":true}`
+keeps the capture stream open after the session ends. Audio heard from that
+point on is buffered (the newest 3 s) and becomes the beginning of the next
+session when `start` arrives. Nothing is transcribed twice: audio queued before
+`stop` belongs to the ending session, everything after to the next one.
+
+- If no `start` follows within 5 s the microphone closes on its own.
+- `cancel`, capture mode and capture errors never keep the microphone warm.
+- Older engines ignore the field and simply close the microphone.
+
+## Parent process watch
+
+When the daemon is started with `PARAKEET_PARENT_PID=<pid>` in its environment
+(v0.1.10+), it checks once a second that it is still that process's child and
+shuts down cleanly, removing its socket and pid file, once the parent is gone.
+A client that crashes or is force-quit therefore can't leave the model loaded
+and the microphone open. Older engines ignore the variable.
+
 ## Audio pipeline
 
 The daemon lives in `src/serve.rs`. `DaemonContext` owns shared control state;

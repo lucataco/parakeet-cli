@@ -13,6 +13,11 @@ pub(super) struct Command {
     /// session records. Absent or false keeps protocol-1 output exactly.
     #[serde(default)]
     pub partials: bool,
+    /// `stop` only: keep the microphone open after this session and give the
+    /// audio heard until the next `start` to that session (v0.1.10+). The
+    /// microphone closes if no `start` follows within a few seconds.
+    #[serde(default)]
+    pub keep_warm: bool,
 }
 
 impl Command {
@@ -21,6 +26,7 @@ impl Command {
             command: command.into(),
             session_id: None,
             partials: false,
+            keep_warm: false,
         }
     }
 }
@@ -241,6 +247,15 @@ mod tests {
         let declined = parse_command(br#"{"command":"start","partials":false}"#).unwrap();
         assert!(!declined.partials);
         assert!(!Command::bare("start").partials);
+    }
+
+    #[test]
+    fn stop_can_ask_to_keep_the_microphone_warm() {
+        let warm =
+            parse_command(br#"{"command":"stop","session_id":"a","keep_warm":true}"#).unwrap();
+        assert!(warm.keep_warm);
+        assert!(!parse_command(br#"{"command":"stop"}"#).unwrap().keep_warm);
+        assert!(!Command::bare("stop").keep_warm);
     }
 
     #[test]

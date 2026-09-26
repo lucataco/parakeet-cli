@@ -10,7 +10,7 @@ use crate::{
     vad,
 };
 use anyhow::{Context, Result};
-use collection::{CaptureEnd, Collected};
+use collection::{Attach, CaptureEnd, Collected, WarmSlot};
 use crossbeam_channel::{Receiver, Sender};
 use protocol::Command;
 use serde_json::Value;
@@ -18,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
     time::Duration,
 };
@@ -32,6 +32,7 @@ struct ActiveSession {
     id: String,
     phase: &'static str,
     control: Arc<AtomicU8>,
+    keep_warm: Arc<AtomicBool>,
 }
 type State = Arc<Mutex<Option<ActiveSession>>>;
 
@@ -52,6 +53,7 @@ struct DaemonContext {
     device: Option<String>,
     shutdown: Arc<Notify>,
     vad_path: PathBuf,
+    warm: WarmSlot,
 }
 
 impl DaemonContext {
@@ -80,6 +82,7 @@ impl DaemonContext {
         let id = request.session_id.unwrap_or_else(new_session_id);
         anyhow::ensure!(!id.is_empty() && id.len() <= 128, "Invalid session_id");
         let control = Arc::new(AtomicU8::new(RUN));
+        let keep_warm = Arc::new(AtomicBool::new(false));
         {
             let mut active = self
                 .state
@@ -90,6 +93,7 @@ impl DaemonContext {
                 id: id.clone(),
                 phase: "recording",
                 control: control.clone(),
+                keep_warm: keep_warm.clone(),
             });
         }
         let (tx, receiver) = crossbeam_channel::bounded(32);
@@ -116,18 +120,29 @@ impl DaemonContext {
             anyhow::bail!("Recognition worker unavailable");
         }
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-        let (device, job_id, capture_control) = (self.device.clone(), id.clone(), control.clone());
-        std::thread::spawn(move || {
-            collection::collect(
-                device,
-                job_id,
-                capture_control,
-                tx,
-                preview_tx,
-                started_tx,
-                capture_end,
-            )
-        });
+        let attach = Attach {
+            job_id: id.clone(),
+            control: control.clone(),
+            keep_warm,
+            tx,
+            previews: preview_tx,
+            started: started_tx,
+            capture_end,
+        };
+        // A microphone kept warm by the previous session already holds the
+        // audio spoken since it stopped; hand the session to it.
+        let warm_sender = self.warm.lock().ok().and_then(|mut slot| slot.take());
+        let attach = match warm_sender {
+            Some(sender) => match sender.send(attach) {
+                Ok(()) => None,
+                Err(unsent) => Some(unsent.into_inner()),
+            },
+            None => Some(attach),
+        };
+        if let Some(attach) = attach {
+            let (device, warm) = (self.device.clone(), self.warm.clone());
+            std::thread::spawn(move || collection::collect(device, attach, warm));
+        }
         started_rx
             .await
             .context("Capture thread exited")?
@@ -160,6 +175,9 @@ impl DaemonContext {
                     "Session identifier does not match"
                 );
                 session.phase = "transcribing";
+                if request.command == "stop" && request.keep_warm {
+                    session.keep_warm.store(true, Ordering::SeqCst);
+                }
                 if request.command == "cancel" {
                     session.control.store(CANCEL, Ordering::SeqCst);
                 } else {
@@ -185,6 +203,38 @@ impl DaemonContext {
             active.as_ref().map(|session| session.id.as_str()),
         ))
     }
+}
+
+/// Environment variable naming the process that launched the daemon. When set,
+/// the daemon shuts down (removing its socket and pid file) once that process
+/// is gone, so a crashed or force-quit client can't leave the model and the
+/// microphone held. Ignored by older daemons, so clients can always set it.
+pub const PARENT_PID_ENV: &str = "PARAKEET_PARENT_PID";
+
+fn watch_parent(shutdown: &Arc<Notify>) {
+    let Some(parent) = std::env::var(PARENT_PID_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+    else {
+        return;
+    };
+    let shutdown = shutdown.clone();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+            if !parent_is_alive(parent, std::os::unix::process::parent_id()) {
+                eprintln!("[daemon] Parent process {parent} exited; shutting down");
+                shutdown.notify_one();
+                return;
+            }
+        }
+    });
+}
+
+/// A process whose parent exits is re-parented (to launchd), so its parent id
+/// no longer matches the one it was started with.
+fn parent_is_alive(expected: u32, current_parent: u32) -> bool {
+    expected == current_parent
 }
 
 fn new_session_id() -> String {
@@ -229,7 +279,9 @@ pub async fn run_serve(
         device: device.clone(),
         shutdown: Arc::new(Notify::new()),
         vad_path,
+        warm: WarmSlot::default(),
     };
+    watch_parent(&context.shutdown);
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut toggle_signal =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())?;
@@ -309,6 +361,12 @@ pub async fn replay(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parent_watch_detects_re_parenting() {
+        assert!(parent_is_alive(4242, 4242));
+        assert!(!parent_is_alive(4242, 1));
+    }
     use crate::audio::StreamingResampler;
     use collection::{enqueue_segment, enqueue_segments, finish_audio};
 
@@ -362,6 +420,7 @@ mod tests {
             id: "original".into(),
             phase: "transcribing",
             control: control.clone(),
+            keep_warm: Arc::new(AtomicBool::new(false)),
         })));
         let (jobs, _receiver) = crossbeam_channel::bounded(1);
         let context = DaemonContext {
@@ -370,6 +429,7 @@ mod tests {
             device: None,
             shutdown: Arc::new(Notify::new()),
             vad_path: PathBuf::new(),
+            warm: WarmSlot::default(),
         };
         for name in ["start", "stop", "cancel"] {
             assert!(
@@ -378,6 +438,7 @@ mod tests {
                         command: name.into(),
                         session_id: Some("new".into()),
                         partials: false,
+                        keep_warm: false,
                     })
                     .await
                     .is_err()
@@ -393,11 +454,23 @@ mod tests {
                     command: name.into(),
                     session_id: Some("original".into()),
                     partials: false,
+                    keep_warm: true,
                 })
                 .await
                 .unwrap();
         }
         assert_eq!(control.load(Ordering::SeqCst), CANCEL);
+        assert!(
+            context
+                .state
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .keep_warm
+                .load(Ordering::SeqCst),
+            "stop with keep_warm marks the session"
+        );
     }
 
     #[test]
