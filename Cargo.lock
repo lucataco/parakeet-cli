@@ -1640,6 +1640,7 @@ dependencies = [
  "futures-util",
  "hound",
  "indicatif",
+ "libc",
  "ndarray 0.16.1",
  "ort",
  "realfft",
