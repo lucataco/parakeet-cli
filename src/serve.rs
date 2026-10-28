@@ -266,8 +266,7 @@ pub async fn run_serve(
     _verbose: bool,
     coreml: bool,
 ) -> Result<()> {
-    let vad_path = vad::ensure_vad_model(model_dir).await?;
-    let recognizer = Recognizer::load(model_dir, &vad_path, coreml)?;
+    let (vad_path, recognizer) = load_recognizer_timed(model_dir, coreml).await?;
     let (_files, listener) = runtime::RuntimeFiles::bind(socket, pid).await?;
     let state = State::default();
     let (jobs, receiver) = crossbeam_channel::bounded(1);
@@ -315,6 +314,20 @@ pub async fn run_serve(
     Ok(())
 }
 
+async fn load_recognizer_timed(model_dir: &Path, coreml: bool) -> Result<(PathBuf, Recognizer)> {
+    let started = std::time::Instant::now();
+    let vad_path = vad::ensure_vad_model(model_dir).await?;
+    let checked = started.elapsed();
+    let recognizer = Recognizer::load(model_dir, &vad_path, coreml)?;
+    eprintln!(
+        "Model loaded in {:.3}s (VAD check {:.3}s, recognizer {:.3}s)",
+        started.elapsed().as_secs_f64(),
+        checked.as_secs_f64(),
+        (started.elapsed() - checked).as_secs_f64()
+    );
+    Ok((vad_path, recognizer))
+}
+
 /// Replays a file through the session pipeline. With `partials`, the same
 /// preview cadence the daemon uses emits `partial` events to stdout as the
 /// audio "arrives", so interim output can be checked deterministically
@@ -325,8 +338,7 @@ pub async fn replay(
     coreml: bool,
     partials: bool,
 ) -> Result<SessionResult> {
-    let vad_path = vad::ensure_vad_model(model_dir).await?;
-    let mut recognizer = Recognizer::load(model_dir, &vad_path, coreml)?;
+    let (_, mut recognizer) = load_recognizer_timed(model_dir, coreml).await?;
     let samples = crate::audio::load_wav_file(file, false)?;
     let mut segmenter = Segmenter::default();
     let mut cadence = PreviewCadence::default();

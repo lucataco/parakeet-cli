@@ -26,8 +26,14 @@ only `complete` ends the session. Supplied IDs must match for stop/cancel.
 {"type":"partial","session_id":"…","text":"Open the notes up","sequence":1,"truncated":false}
 {"type":"partial","session_id":"…","text":"Open the notes app and create a","sequence":2,"truncated":false}
 {"type":"transcribing","session_id":"…"}
-{"type":"complete","session_id":"…","status":"ok","text":"First line.\nSecond line.","failed_segments":0,"dropped_samples":0,"duration":12.0,"inference_time":0.8,"message":null}
+{"type":"complete","session_id":"…","status":"ok","text":"First line.\nSecond line.","failed_segments":0,"dropped_samples":0,"duration":12.0,"inference_time":0.8,"stages":{"vad":0.1,"mel":0.05,"encoder":0.6,"decoder":0.05},"message":null}
 ```
+
+`stages` splits `inference_time` into seconds spent in VAD, the mel spectrogram,
+the encoder, and the decoder, summed over the session's segments. A segment with
+no speech spends time only in VAD. Clients that ignore unknown fields need no
+change. At startup the engine also writes `Model loaded in …` to stderr
+with the VAD check and recognizer load times.
 
 Completion status is `ok`, `partial`, `empty`, or `error`. Empty sessions and
 capture-start failures also complete. Loss with no recovered text is `error`,
