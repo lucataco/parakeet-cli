@@ -100,7 +100,10 @@ impl Recognizer {
         for chunk in segment.samples.chunks(VAD_CHUNK_SAMPLES) {
             let mut padded = [0.0; VAD_CHUNK_SAMPLES];
             padded[..chunk.len()].copy_from_slice(chunk);
-            speech |= self.vad.process_chunk(&padded)? >= 0.5;
+            if self.vad.process_chunk(&padded)? >= 0.5 {
+                speech = true;
+                break;
+            }
         }
         stages.vad += started.elapsed().as_secs_f64();
         if !speech {
