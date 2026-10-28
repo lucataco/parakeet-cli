@@ -135,7 +135,12 @@ impl Encoder {
     }
 
     fn load_cpu(path: &Path, verbose: bool) -> Result<Session> {
-        let builder = Session::builder().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut builder = Session::builder().map_err(|e| anyhow::anyhow!("{e}"))?;
+        if let Some(threads) = performance_cores() {
+            builder = builder
+                .with_intra_threads(threads)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        }
         let builder = builder
             .with_optimization_level(GraphOptimizationLevel::All)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -197,5 +202,39 @@ impl Encoder {
         let lengths_vec: Vec<i64> = len_data.to_vec();
 
         Ok((enc_data.to_vec(), enc_shape_vec, lengths_vec))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn performance_cores() -> Option<usize> {
+    let mut cores: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    let status = unsafe {
+        libc::sysctlbyname(
+            c"hw.perflevel0.physicalcpu".as_ptr(),
+            (&mut cores as *mut libc::c_int).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (status == 0 && cores > 0).then_some(cores as usize)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn performance_cores() -> Option<usize> {
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn performance_cores_never_exceed_the_available_cores() {
+        let available = std::thread::available_parallelism().map_or(usize::MAX, |n| n.get());
+        if let Some(cores) = performance_cores() {
+            assert!((1..=available).contains(&cores));
+        }
     }
 }
