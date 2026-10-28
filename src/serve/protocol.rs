@@ -135,7 +135,9 @@ pub(crate) fn completion(result: &SessionResult, session_id: &str) -> Value {
     json!({"type": "complete", "session_id": session_id, "status": status,
         "text": result.text, "failed_segments": result.failed_segments,
         "dropped_samples": result.dropped_samples, "message": result.message,
-        "duration": result.duration, "inference_time": result.inference_time})
+        "duration": result.duration, "inference_time": result.inference_time,
+        "stages": {"vad": result.stages.vad, "mel": result.stages.mel,
+            "encoder": result.stages.encoder, "decoder": result.stages.decoder}})
 }
 
 pub(super) fn capture_reply(result: &SessionResult, session_id: &str) -> Value {
@@ -205,6 +207,27 @@ mod tests {
             json!({"status":"ok", "state":"idle", "session_id":null, "protocol_version":DAEMON_PROTOCOL_VERSION})
         );
         assert!(error("invalid").get("session_id").is_none());
+    }
+
+    #[test]
+    fn completion_reports_each_recognition_stage() {
+        let result = SessionResult {
+            text: "text".into(),
+            inference_time: 1.0,
+            stages: crate::session_recognition::StageTimes {
+                vad: 0.1,
+                mel: 0.05,
+                encoder: 0.7,
+                decoder: 0.15,
+            },
+            ..Default::default()
+        };
+        let event = completion(&result, "id");
+        assert_eq!(
+            event["stages"],
+            json!({"vad": 0.1, "mel": 0.05, "encoder": 0.7, "decoder": 0.15})
+        );
+        assert_eq!(event["inference_time"], 1.0);
     }
 
     #[tokio::test]

@@ -7,10 +7,20 @@ use crate::{
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::path::Path;
+use std::time::Instant;
 
 pub struct Recognizer {
     model: ParakeetModel,
     vad: SileroVad,
+}
+
+/// Seconds spent in each recognition stage, summed over a session's segments.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct StageTimes {
+    pub vad: f64,
+    pub mel: f64,
+    pub encoder: f64,
+    pub decoder: f64,
 }
 
 #[derive(Default)]
@@ -22,6 +32,7 @@ pub struct SessionResult {
     pub message: Option<String>,
     pub duration: f64,
     pub inference_time: f64,
+    pub stages: StageTimes,
 }
 
 impl SessionResult {
@@ -45,14 +56,16 @@ impl Recognizer {
 
     pub fn append(&mut self, segment: Segment, result: &mut SessionResult) {
         result.duration += (segment.owned_end - segment.owned_start) as f64 / 16000.0;
-        let started = std::time::Instant::now();
-        let outcome =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.transcribe(segment)))
-                .unwrap_or_else(|_| {
-                    Err(anyhow::anyhow!(
-                        "Recognition panicked while processing a segment"
-                    ))
-                });
+        let started = Instant::now();
+        let stages = &mut result.stages;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.transcribe(segment, stages)
+        }))
+        .unwrap_or_else(|_| {
+            Err(anyhow::anyhow!(
+                "Recognition panicked while processing a segment"
+            ))
+        });
         match outcome {
             Ok(tokens) => result.tokens.extend(tokens),
             Err(error) => {
@@ -68,16 +81,20 @@ impl Recognizer {
     /// are swallowed: a preview is advisory and never counts toward the
     /// session's loss accounting or its final transcript.
     pub fn preview(&mut self, segment: Segment) -> Option<Vec<usize>> {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.transcribe(segment)))
-            .ok()
-            .and_then(|outcome| outcome.ok())
+        let mut discarded = StageTimes::default();
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.transcribe(segment, &mut discarded)
+        }))
+        .ok()
+        .and_then(|outcome| outcome.ok())
     }
 
     pub fn decode(&self, tokens: &[usize]) -> String {
         self.model.tokenizer.decode(tokens)
     }
 
-    fn transcribe(&mut self, segment: Segment) -> Result<Vec<usize>> {
+    fn transcribe(&mut self, segment: Segment, stages: &mut StageTimes) -> Result<Vec<usize>> {
+        let started = Instant::now();
         self.vad.reset();
         let mut speech = false;
         for chunk in segment.samples.chunks(VAD_CHUNK_SAMPLES) {
@@ -85,25 +102,33 @@ impl Recognizer {
             padded[..chunk.len()].copy_from_slice(chunk);
             speech |= self.vad.process_chunk(&padded)? >= 0.5;
         }
+        stages.vad += started.elapsed().as_secs_f64();
         if !speech {
             return Ok(Vec::new());
         }
+        let started = Instant::now();
         let features =
             audio::compute_mel_spectrogram(&segment.samples, &audio::MelConfig::default());
+        stages.mel += started.elapsed().as_secs_f64();
+        let started = Instant::now();
         let (encoded, shape, lengths) = self.model.encoder.encode(&features)?;
+        stages.encoder += started.elapsed().as_secs_f64();
         anyhow::ensure!(shape.len() == 3, "Invalid encoder shape");
         let valid = usize::try_from(*lengths.first().context("No encoder length")?)?.min(shape[2]);
         let start = (segment.owned_start / FRAME_SAMPLES).min(valid);
         let end = segment.owned_end.div_ceil(FRAME_SAMPLES).min(valid);
         let frames = end.saturating_sub(start);
         anyhow::ensure!(frames > 0, "Encoder returned no frames for recorded speech");
-        self.model.decoder.decode_greedy_window(
+        let started = Instant::now();
+        let tokens = self.model.decoder.decode_greedy_window(
             &encoded,
             &shape,
             valid as i64,
             self.model.tokenizer.blank_id,
             start..end,
-        )
+        );
+        stages.decoder += started.elapsed().as_secs_f64();
+        tokens
     }
 }
 
