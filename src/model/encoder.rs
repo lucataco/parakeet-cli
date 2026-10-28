@@ -146,6 +146,8 @@ impl Encoder {
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let mut builder = builder
             .with_memory_pattern(true)
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .with_prepacking(false)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
 
         let session = builder
