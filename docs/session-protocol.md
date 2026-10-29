@@ -119,8 +119,13 @@ is busy and skips that tick's preview:
 - Ticks are written by the collection thread, which the CPAL callback never
   waits on, so a slow decode can't delay them. They stop as soon as `stop` or
   `cancel` arrives and never follow the session's `transcribing` event.
-- If the VAD fails on a chunk, the chunk counts as silence, so a client waiting
-  for silence still ends the utterance.
+- The session never depends on the VAD. If the model fails to load at `start`,
+  the session starts and records without ticks. If it fails on a chunk
+  mid-session, ticks stop there and recording and `partial` events go on. Both
+  cases log to stderr. A failed chunk is never reported as silence, because a
+  client would end an utterance the user is still speaking.
+- A client must keep a fallback for a session that sends no ticks or whose ticks
+  stop, for example the timer it would use with an engine that predates ticks.
 - `capture` sessions and sessions without `partials` never receive ticks.
   Engines up to v0.1.11 never send them. Clients that ignore unknown event
   types need no change, and `protocol_version` stays 2.
