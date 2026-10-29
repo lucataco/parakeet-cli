@@ -158,10 +158,7 @@ impl PreviewCadence {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tick {
-    /// Session audio received when the tick was taken (16 kHz samples).
     pub audio_samples: usize,
-    /// Audio since the last speech chunk (16 kHz samples); see `SilenceMeter`.
-    /// `None` once the session has no working meter.
     pub trailing_silence_samples: Option<usize>,
 }
 
@@ -178,9 +175,6 @@ impl Ticker {
         }
     }
 
-    /// Records `samples` just pushed to `segmenter` and returns the tick when
-    /// the cadence fires. A meter that fails is dropped: the session keeps
-    /// ticking without silence rather than report a wrong value.
     pub fn observe(&mut self, segmenter: &Segmenter, samples: &[f32]) -> Option<Tick> {
         if let Some(Err(error)) = self.silence.as_mut().map(|silence| silence.push(samples)) {
             eprintln!("Silence VAD failed; no more ticks this session: {error:#}");

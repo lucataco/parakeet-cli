@@ -92,7 +92,6 @@ pub(crate) fn partial(
         "sequence": sequence, "truncated": truncated, "audio_ms": audio_ms})
 }
 
-/// `None` when the session has no silence measurement to report.
 pub(crate) fn tick(session_id: &str, tick: Tick) -> Option<Value> {
     let silence = samples_to_ms(tick.trailing_silence_samples?);
     Some(json!({"type": "tick", "session_id": session_id,

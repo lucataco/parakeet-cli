@@ -6,8 +6,6 @@ const MIN_SPEECH_PROBABILITY: f32 = 0.5;
 
 type Classifier = Box<dyn FnMut(&[f32]) -> Result<f32> + Send>;
 
-/// Measures how long a take has been silent, one 512-sample chunk at a time as
-/// audio arrives, so the cost per tick never grows with the take.
 pub struct SilenceMeter {
     speech_probability: Classifier,
     pending: Vec<f32>,
@@ -30,8 +28,6 @@ impl SilenceMeter {
         Ok(Self::new(move |chunk| vad.process_chunk(chunk)))
     }
 
-    /// After an error the counters no longer describe the audio, so the meter
-    /// must be discarded.
     pub fn push(&mut self, samples: &[f32]) -> Result<()> {
         self.pending.extend_from_slice(samples);
         while self.pending.len() >= VAD_CHUNK_SAMPLES {

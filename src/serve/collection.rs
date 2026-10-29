@@ -125,9 +125,6 @@ pub(super) struct Interim {
 }
 
 impl Interim {
-    /// Previews travel on their own single-slot channel: a slow worker simply
-    /// misses a preview, never a tick, and a preview can never displace a real
-    /// segment or register as dropped audio.
     pub fn observe(&mut self, segmenter: &Segmenter, samples: &[f32], report: impl FnOnce(Tick)) {
         let Some(tick) = self.ticker.observe(segmenter, samples) else {
             return;

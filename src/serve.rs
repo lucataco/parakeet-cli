@@ -79,8 +79,6 @@ impl DaemonContext {
         } else {
             None
         };
-        // One slot is enough: the worker always takes the newest preview and a
-        // missed preview is simply skipped.
         let (preview_tx, previews) = crossbeam_channel::bounded(1);
         let interim = if request.partials && !capture_mode {
             Some(Interim {
@@ -335,8 +333,6 @@ async fn load_recognizer_timed(model_dir: &Path, coreml: bool) -> Result<(PathBu
     Ok((vad_path, recognizer))
 }
 
-/// The silence meter behind `tick`. Without it a session still records and
-/// streams partials, like one on an engine that predates ticks.
 fn load_silence(vad_path: &Path) -> Option<SilenceMeter> {
     SilenceMeter::silero(vad_path)
         .inspect_err(|error| eprintln!("Silence VAD unavailable; no ticks this session: {error:#}"))
@@ -396,9 +392,6 @@ mod tests {
         })
     }
 
-    /// Hears `chunks` 100 ms chunks of speech into `interim`, emptying the
-    /// preview slot after each so no preview is skipped. Returns, per cadence
-    /// step, the tick event if one was reported and whether a preview was offered.
     fn hear_speech(
         interim: &mut Interim,
         previews: &Receiver<Preview>,
