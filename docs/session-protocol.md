@@ -5,8 +5,8 @@ stdout, with human-readable diagnostics on stderr. Plain-transcript consumers
 must read the `text` field of `complete` events. Newlines inside text are escaped.
 
 Protocol 2 is a superset of protocol 1: a client that sends protocol-1 commands
-receives exactly the protocol-1 event stream. The one addition is opt-in interim
-text (`partial` events) for a session that asks for it.
+receives exactly the protocol-1 event stream. The additions are opt-in interim
+events for a session that asks for them: `partial` text and `tick` silence.
 
 Send one newline-terminated command per Unix socket connection:
 
@@ -23,7 +23,9 @@ only `complete` ends the session. Supplied IDs must match for stop/cancel.
 
 ```json
 {"type":"session_started","session_id":"…"}
+{"type":"tick","session_id":"…","audio_ms":510,"trailing_silence_ms":0}
 {"type":"partial","session_id":"…","text":"Open the notes up","sequence":1,"truncated":false}
+{"type":"tick","session_id":"…","audio_ms":1020,"trailing_silence_ms":0}
 {"type":"partial","session_id":"…","text":"Open the notes app and create a","sequence":2,"truncated":false}
 {"type":"transcribing","session_id":"…"}
 {"type":"complete","session_id":"…","status":"ok","text":"First line.\nSecond line.","failed_segments":0,"dropped_samples":0,"duration":12.0,"inference_time":0.8,"stages":{"vad":0.1,"mel":0.05,"encoder":0.6,"decoder":0.05},"message":null}
@@ -85,9 +87,46 @@ tick and the 15 s cap bounds it at ~250 ms. Sessions without `partials` do no
 extra work.
 
 `parakeet transcribe recording.wav --session --partials --format json` replays a
-file through the same cadence and preview code and prints the `partial` lines
-before the `complete` line, so interim output can be checked without a
-microphone.
+file through the same cadence and preview code and prints the `tick` and
+`partial` lines before the `complete` line, so interim output can be checked
+without a microphone.
+
+## Measured silence (`tick`)
+
+A session started with `"partials": true` also receives a `tick` event on every
+preview-cadence tick, whether or not the text changed, and even when the worker
+is busy and skips that tick's preview:
+
+```json
+{"type":"tick","session_id":"…","audio_ms":6120,"trailing_silence_ms":740}
+```
+
+- `audio_ms` means what it means on `partial`: how much of the recording had
+  arrived when the tick was taken. The partial decoded at that moment carries
+  the same value and is written after the tick.
+- `trailing_silence_ms` is the audio since the end of the last 512-sample
+  (32 ms) chunk whose Silero speech probability was at least 0.5. It is 0 when
+  the latest chunk is speech, and before any speech it equals the audio heard
+  so far. Audio short of a whole chunk is not counted yet, so the value can lag
+  `audio_ms` by up to 31 ms.
+- The session runs its own Silero instance over each chunk once, as it arrives,
+  so a tick costs the same at 1 s as at 60 s. The recognizer's VAD scan stops
+  at the first speech chunk and cannot provide this.
+- A client can end an utterance on silence measured in audio time, for example
+  on the first tick of at least 900 ms once speech has been heard. Gaps between
+  partials can't serve: their arrival depends on decode time, and a word spoken
+  just before a tick is often missing from that tick's text.
+- Ticks are written by the collection thread, which the CPAL callback never
+  waits on, so a slow decode can't delay them. They stop as soon as `stop` or
+  `cancel` arrives and never follow the session's `transcribing` event.
+- If the VAD fails on a chunk, the chunk counts as silence, so a client waiting
+  for silence still ends the utterance.
+- `capture` sessions and sessions without `partials` never receive ticks.
+  Engines up to v0.1.11 never send them. Clients that ignore unknown event
+  types need no change, and `protocol_version` stays 2.
+
+Cost: `start` loads the session's Silero instance (about 17 ms on Apple Silicon)
+and each 32 ms chunk costs about 60 µs of CPU, under 0.2% of one core.
 
 ## Keeping the microphone warm between sessions
 
