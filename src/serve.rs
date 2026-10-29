@@ -350,16 +350,7 @@ pub async fn replay(
         }
         if partials && cadence.observe(chunk.len(), segmenter.owned_pending()) {
             if let Some(preview) = segmenter.preview(PREVIEW_MAX_OWNED_SAMPLES) {
-                let truncated = preview.truncated;
-                let audio_ms = protocol::samples_to_ms(preview.audio_samples);
-                if let Some(tokens) = recognizer.preview(preview.segment) {
-                    let mut running = result.tokens.clone();
-                    running.extend(tokens);
-                    let text = recognizer.decode(&running);
-                    if let Some(event) = emitter.next("replay", text, truncated, audio_ms) {
-                        protocol::emit(event);
-                    }
-                }
+                worker::emit_partial(&mut recognizer, &result, "replay", preview, &mut emitter);
             }
         }
     }
