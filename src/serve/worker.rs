@@ -102,7 +102,7 @@ pub(super) fn run(mut recognizer: Recognizer, jobs: Receiver<Job>, state: State,
 
 /// Decodes the committed tokens plus the preview's tokens into one running
 /// text. The session's own token list is left untouched.
-fn emit_partial(
+pub(super) fn emit_partial(
     recognizer: &mut Recognizer,
     result: &SessionResult,
     session_id: &str,
