@@ -25,7 +25,6 @@ impl SilenceMeter {
         }
     }
 
-    /// A meter with its own Silero instance.
     pub fn silero(path: &Path) -> Result<Self> {
         let mut vad = SileroVad::load(path, false)?;
         Ok(Self::new(move |chunk| vad.process_chunk(chunk)))
