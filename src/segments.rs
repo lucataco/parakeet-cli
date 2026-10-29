@@ -1,3 +1,5 @@
+use crate::vad::SilenceMeter;
+
 pub const FRAME_SAMPLES: usize = 1280;
 pub const CORE_SAMPLES: usize = FRAME_SAMPLES * 320;
 pub const CONTEXT_SAMPLES: usize = FRAME_SAMPLES * 8;
@@ -151,6 +153,40 @@ impl PreviewCadence {
         } else {
             false
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tick {
+    /// Session audio received when the tick was taken (16 kHz samples).
+    pub audio_samples: usize,
+    /// Audio since the last speech chunk (16 kHz samples); see `SilenceMeter`.
+    pub trailing_silence_samples: usize,
+}
+
+pub struct Ticker {
+    cadence: PreviewCadence,
+    silence: SilenceMeter,
+}
+
+impl Ticker {
+    pub fn new(silence: SilenceMeter) -> Self {
+        Self {
+            cadence: PreviewCadence::default(),
+            silence,
+        }
+    }
+
+    /// Records `samples` just pushed to `segmenter` and returns the tick when
+    /// the cadence fires.
+    pub fn observe(&mut self, segmenter: &Segmenter, samples: &[f32]) -> Option<Tick> {
+        self.silence.push(samples);
+        self.cadence
+            .observe(samples.len(), segmenter.owned_pending())
+            .then(|| Tick {
+                audio_samples: segmenter.received,
+                trailing_silence_samples: self.silence.trailing_samples(),
+            })
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::{DAEMON_PROTOCOL_VERSION, session_recognition::SessionResult};
+use crate::{DAEMON_PROTOCOL_VERSION, segments::Tick, session_recognition::SessionResult};
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -90,6 +90,12 @@ pub(crate) fn partial(
 ) -> Value {
     json!({"type": "partial", "session_id": session_id, "text": text,
         "sequence": sequence, "truncated": truncated, "audio_ms": audio_ms})
+}
+
+pub(crate) fn tick(session_id: &str, tick: Tick) -> Value {
+    json!({"type": "tick", "session_id": session_id,
+        "audio_ms": samples_to_ms(tick.audio_samples),
+        "trailing_silence_ms": samples_to_ms(tick.trailing_silence_samples)})
 }
 
 /// 16 kHz samples to whole milliseconds.
@@ -314,6 +320,21 @@ mod tests {
             !partial("s", "first\nsecond", 1, false, 0)
                 .to_string()
                 .contains('\n')
+        );
+    }
+
+    #[test]
+    fn tick_reports_audio_and_trailing_silence_in_milliseconds() {
+        let event = tick(
+            "s",
+            Tick {
+                audio_samples: 97_920,
+                trailing_silence_samples: 11_840,
+            },
+        );
+        assert_eq!(
+            event,
+            json!({"type": "tick", "session_id": "s", "audio_ms": 6_120, "trailing_silence_ms": 740})
         );
     }
 
