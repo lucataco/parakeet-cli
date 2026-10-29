@@ -84,7 +84,7 @@ impl DaemonContext {
         let (preview_tx, previews) = crossbeam_channel::bounded(1);
         let interim = if request.partials && !capture_mode {
             Some(Interim {
-                ticker: Ticker::new(SilenceMeter::silero(&self.vad_path)?),
+                ticker: Ticker::new(load_silence(&self.vad_path)),
                 previews: preview_tx,
             })
         } else {
@@ -335,6 +335,14 @@ async fn load_recognizer_timed(model_dir: &Path, coreml: bool) -> Result<(PathBu
     Ok((vad_path, recognizer))
 }
 
+/// The silence meter behind `tick`. Without it a session still records and
+/// streams partials, like one on an engine that predates ticks.
+fn load_silence(vad_path: &Path) -> Option<SilenceMeter> {
+    SilenceMeter::silero(vad_path)
+        .inspect_err(|error| eprintln!("Silence VAD unavailable; no ticks this session: {error:#}"))
+        .ok()
+}
+
 /// Replays a file through the session pipeline. With `partials`, the same
 /// preview cadence the daemon uses emits `tick` and `partial` events to stdout
 /// as the audio "arrives", so interim output can be checked deterministically
@@ -348,9 +356,7 @@ pub async fn replay(
     let (vad_path, mut recognizer) = load_recognizer_timed(model_dir, coreml).await?;
     let samples = crate::audio::load_wav_file(file, false)?;
     let mut segmenter = Segmenter::default();
-    let mut ticker = partials
-        .then(|| SilenceMeter::silero(&vad_path).map(Ticker::new))
-        .transpose()?;
+    let mut ticker = partials.then(|| Ticker::new(load_silence(&vad_path)));
     let mut emitter = protocol::PartialEmitter::default();
     let mut result = SessionResult::default();
     for chunk in samples.chunks(480) {
@@ -360,7 +366,9 @@ pub async fn replay(
         let Some(tick) = ticker.as_mut().and_then(|t| t.observe(&segmenter, chunk)) else {
             continue;
         };
-        protocol::emit(protocol::tick("replay", tick));
+        if let Some(event) = protocol::tick("replay", tick) {
+            protocol::emit(event);
+        }
         if let Some(preview) = segmenter.preview(PREVIEW_MAX_OWNED_SAMPLES) {
             worker::emit_partial(&mut recognizer, &result, "replay", preview, &mut emitter);
         }
@@ -377,6 +385,41 @@ mod tests {
     use super::*;
     use crate::vad::VAD_CHUNK_SAMPLES;
     use serde_json::json;
+
+    fn loud_is_speech() -> SilenceMeter {
+        SilenceMeter::new(|chunk| {
+            Ok(if chunk.iter().any(|sample| sample.abs() >= 0.1) {
+                0.9
+            } else {
+                0.1
+            })
+        })
+    }
+
+    /// Hears `chunks` 100 ms chunks of speech into `interim`, emptying the
+    /// preview slot after each so no preview is skipped. Returns, per cadence
+    /// step, the tick event if one was reported and whether a preview was offered.
+    fn hear_speech(
+        interim: &mut Interim,
+        previews: &Receiver<Preview>,
+        chunks: usize,
+    ) -> Vec<(Option<Value>, bool)> {
+        let mut segmenter = Segmenter::default();
+        let mut steps = Vec::new();
+        for _ in 0..chunks {
+            let chunk = vec![0.3; 1_600];
+            segmenter.push(&chunk);
+            interim.observe(&segmenter, &chunk, |tick| {
+                steps.push((protocol::tick("s", tick), false));
+            });
+            if previews.try_recv().is_ok() {
+                if let Some(step) = steps.last_mut() {
+                    step.1 = true;
+                }
+            }
+        }
+        steps
+    }
 
     #[test]
     fn parent_watch_detects_re_parenting() {
@@ -490,18 +533,55 @@ mod tests {
     }
 
     #[test]
+    fn a_session_without_a_silence_meter_still_offers_previews_and_sends_no_ticks() {
+        let (preview_tx, previews) = crossbeam_channel::bounded(1);
+        let mut interim = Interim {
+            ticker: Ticker::new(None),
+            previews: preview_tx,
+        };
+        let steps = hear_speech(&mut interim, &previews, 20);
+        assert_eq!(steps.len(), 4, "the cadence still fires every 0.5 s");
+        assert!(
+            steps
+                .iter()
+                .all(|(tick, previewed)| tick.is_none() && *previewed)
+        );
+    }
+
+    #[test]
+    fn a_missing_vad_model_leaves_the_session_without_a_meter() {
+        assert!(load_silence(Path::new("/nonexistent/silero_vad.onnx")).is_none());
+    }
+
+    #[test]
+    fn a_vad_failure_mid_session_stops_ticks_but_not_previews() {
+        let (preview_tx, previews) = crossbeam_channel::bounded(1);
+        let mut chunks_seen = 0;
+        let failing_after_one_second = SilenceMeter::new(move |_| {
+            chunks_seen += 1;
+            anyhow::ensure!(chunks_seen <= 31, "model failed");
+            Ok(0.9)
+        });
+        let mut interim = Interim {
+            ticker: Ticker::new(Some(failing_after_one_second)),
+            previews: preview_tx,
+        };
+        let steps = hear_speech(&mut interim, &previews, 30);
+        let ticked: Vec<_> = steps.iter().map(|(tick, _)| tick.is_some()).collect();
+        assert_eq!(
+            ticked,
+            [true, true, false, false, false, false],
+            "ticks stop after the chunk the model failed on, never counting it as silence"
+        );
+        assert!(steps.iter().all(|(_, previewed)| *previewed));
+    }
+
+    #[test]
     fn every_cadence_tick_reports_silence_while_a_busy_worker_misses_previews() {
         let (segment_tx, segment_rx) = crossbeam_channel::bounded(32);
         let (preview_tx, preview_rx) = crossbeam_channel::bounded(1);
-        let loud_is_speech = SilenceMeter::new(|chunk| {
-            if chunk.iter().any(|sample| sample.abs() >= 0.1) {
-                0.9
-            } else {
-                0.1
-            }
-        });
         let mut interim = Interim {
-            ticker: Ticker::new(loud_is_speech),
+            ticker: Ticker::new(Some(loud_is_speech())),
             previews: preview_tx,
         };
         let mut segmenter = Segmenter::default();
@@ -515,7 +595,7 @@ mod tests {
                     !events.is_empty() || preview_rx.is_empty(),
                     "the first tick is reported before its preview is offered"
                 );
-                events.push(protocol::tick("s", tick));
+                events.extend(protocol::tick("s", tick));
             });
         }
         let speech_chunk_end = 16_000_usize.next_multiple_of(VAD_CHUNK_SAMPLES);

@@ -92,10 +92,12 @@ pub(crate) fn partial(
         "sequence": sequence, "truncated": truncated, "audio_ms": audio_ms})
 }
 
-pub(crate) fn tick(session_id: &str, tick: Tick) -> Value {
-    json!({"type": "tick", "session_id": session_id,
+/// `None` when the session has no silence measurement to report.
+pub(crate) fn tick(session_id: &str, tick: Tick) -> Option<Value> {
+    let silence = samples_to_ms(tick.trailing_silence_samples?);
+    Some(json!({"type": "tick", "session_id": session_id,
         "audio_ms": samples_to_ms(tick.audio_samples),
-        "trailing_silence_ms": samples_to_ms(tick.trailing_silence_samples)})
+        "trailing_silence_ms": silence}))
 }
 
 /// 16 kHz samples to whole milliseconds.
@@ -329,12 +331,14 @@ mod tests {
             "s",
             Tick {
                 audio_samples: 97_920,
-                trailing_silence_samples: 11_840,
+                trailing_silence_samples: Some(11_840),
             },
         );
         assert_eq!(
             event,
-            json!({"type": "tick", "session_id": "s", "audio_ms": 6_120, "trailing_silence_ms": 740})
+            Some(
+                json!({"type": "tick", "session_id": "s", "audio_ms": 6_120, "trailing_silence_ms": 740})
+            )
         );
     }
 

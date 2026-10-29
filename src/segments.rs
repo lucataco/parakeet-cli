@@ -161,16 +161,17 @@ pub struct Tick {
     /// Session audio received when the tick was taken (16 kHz samples).
     pub audio_samples: usize,
     /// Audio since the last speech chunk (16 kHz samples); see `SilenceMeter`.
-    pub trailing_silence_samples: usize,
+    /// `None` once the session has no working meter.
+    pub trailing_silence_samples: Option<usize>,
 }
 
 pub struct Ticker {
     cadence: PreviewCadence,
-    silence: SilenceMeter,
+    silence: Option<SilenceMeter>,
 }
 
 impl Ticker {
-    pub fn new(silence: SilenceMeter) -> Self {
+    pub fn new(silence: Option<SilenceMeter>) -> Self {
         Self {
             cadence: PreviewCadence::default(),
             silence,
@@ -178,14 +179,18 @@ impl Ticker {
     }
 
     /// Records `samples` just pushed to `segmenter` and returns the tick when
-    /// the cadence fires.
+    /// the cadence fires. A meter that fails is dropped: the session keeps
+    /// ticking without silence rather than report a wrong value.
     pub fn observe(&mut self, segmenter: &Segmenter, samples: &[f32]) -> Option<Tick> {
-        self.silence.push(samples);
+        if let Some(Err(error)) = self.silence.as_mut().map(|silence| silence.push(samples)) {
+            eprintln!("Silence VAD failed; no more ticks this session: {error:#}");
+            self.silence = None;
+        }
         self.cadence
             .observe(samples.len(), segmenter.owned_pending())
             .then(|| Tick {
                 audio_samples: segmenter.received,
-                trailing_silence_samples: self.silence.trailing_samples(),
+                trailing_silence_samples: self.silence.as_ref().map(SilenceMeter::trailing_samples),
             })
     }
 }

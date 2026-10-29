@@ -195,13 +195,16 @@ fn record(capture: &Capture, attach: Attach, preroll: Vec<f32>) -> bool {
     let dropped_before = capture.stats.dropped.load(Ordering::Relaxed);
     let mut error = None;
     let capture_start = std::time::Instant::now();
+    let emit_tick = |tick| {
+        if let Some(event) = protocol::tick(&job_id, tick) {
+            protocol::emit(event);
+        }
+    };
     if !preroll.is_empty() {
         let resampled = resampler.process(&preroll);
         enqueue_segments(&mut segmenter, &resampled, &tx, &mut dropped);
         if let Some(interim) = interim.as_mut() {
-            interim.observe(&segmenter, &resampled, |tick| {
-                protocol::emit(protocol::tick(&job_id, tick));
-            });
+            interim.observe(&segmenter, &resampled, emit_tick);
         }
     }
     while control.load(Ordering::SeqCst) == RUN {
@@ -210,9 +213,7 @@ fn record(capture: &Capture, attach: Attach, preroll: Vec<f32>) -> bool {
                 let resampled = resampler.process(&samples);
                 enqueue_segments(&mut segmenter, &resampled, &tx, &mut dropped);
                 if let Some(interim) = interim.as_mut() {
-                    interim.observe(&segmenter, &resampled, |tick| {
-                        protocol::emit(protocol::tick(&job_id, tick));
-                    });
+                    interim.observe(&segmenter, &resampled, emit_tick);
                 }
                 if let Some(detector) = capture_end.as_mut() {
                     match detector.process(&resampled) {
