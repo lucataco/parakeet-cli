@@ -92,11 +92,16 @@ pub(crate) fn partial(
         "sequence": sequence, "truncated": truncated, "audio_ms": audio_ms})
 }
 
-pub(crate) fn tick(session_id: &str, tick: Tick) -> Option<Value> {
+/// `decoded_samples` is how much of the recording the newest finished preview
+/// decode had heard. When it reaches the end of the speech (`audio_ms` minus
+/// `trailing_silence_ms`), the latest `partial` is the text of everything said
+/// so far, and a client may act on it.
+pub(crate) fn tick(session_id: &str, tick: Tick, decoded_samples: usize) -> Option<Value> {
     let silence = samples_to_ms(tick.trailing_silence_samples?);
     Some(json!({"type": "tick", "session_id": session_id,
         "audio_ms": samples_to_ms(tick.audio_samples),
-        "trailing_silence_ms": silence}))
+        "trailing_silence_ms": silence,
+        "decoded_ms": samples_to_ms(decoded_samples)}))
 }
 
 /// 16 kHz samples to whole milliseconds.
@@ -331,13 +336,14 @@ mod tests {
             Tick {
                 audio_samples: 97_920,
                 trailing_silence_samples: Some(11_840),
+                preview: true,
             },
+            88_000,
         );
         assert_eq!(
             event,
-            Some(
-                json!({"type": "tick", "session_id": "s", "audio_ms": 6_120, "trailing_silence_ms": 740})
-            )
+            Some(json!({"type": "tick", "session_id": "s", "audio_ms": 6_120,
+                "trailing_silence_ms": 740, "decoded_ms": 5_500}))
         );
     }
 

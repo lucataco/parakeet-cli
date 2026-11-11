@@ -18,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -43,6 +43,8 @@ struct Job {
     /// Interim previews; its sender is dropped at once when a session did not
     /// ask for partials, so the worker only ever waits on segments.
     previews: Receiver<Preview>,
+    /// Where the worker records how much audio its newest preview decode heard.
+    decoded: Arc<AtomicUsize>,
     response: Option<tokio::sync::oneshot::Sender<Value>>,
 }
 
@@ -79,15 +81,10 @@ impl DaemonContext {
         } else {
             None
         };
-        let (preview_tx, previews) = crossbeam_channel::bounded(1);
-        let interim = if request.partials && !capture_mode {
-            Some(Interim {
-                ticker: Ticker::new(load_silence(&self.vad_path)),
-                previews: preview_tx,
-            })
-        } else {
-            None
-        };
+        let (interim, previews, decoded) = Interim::new(Ticker::new(load_silence(&self.vad_path)));
+        // Dropping the interim closes the preview channel for a session that
+        // did not ask for partials.
+        let interim = (request.partials && !capture_mode).then_some(interim);
         let id = request.session_id.unwrap_or_else(new_session_id);
         anyhow::ensure!(!id.is_empty() && id.len() <= 128, "Invalid session_id");
         let control = Arc::new(AtomicU8::new(RUN));
@@ -114,6 +111,7 @@ impl DaemonContext {
                 control: control.clone(),
                 receiver,
                 previews,
+                decoded,
                 response: capture_mode.then_some(response_tx),
             })
             .is_err()
@@ -355,6 +353,7 @@ pub async fn replay(
     let mut ticker = partials.then(|| Ticker::new(load_silence(&vad_path)));
     let mut emitter = protocol::PartialEmitter::default();
     let mut result = SessionResult::default();
+    let mut decoded = 0;
     for chunk in samples.chunks(480) {
         for segment in segmenter.push(chunk) {
             recognizer.append(segment, &mut result);
@@ -362,11 +361,18 @@ pub async fn replay(
         let Some(tick) = ticker.as_mut().and_then(|t| t.observe(&segmenter, chunk)) else {
             continue;
         };
-        if let Some(event) = protocol::tick("replay", tick) {
+        if let Some(event) = protocol::tick("replay", tick, decoded) {
             protocol::emit(event);
         }
+        if !tick.preview {
+            continue;
+        }
         if let Some(preview) = segmenter.preview(PREVIEW_MAX_OWNED_SAMPLES) {
-            worker::emit_partial(&mut recognizer, &result, "replay", preview, &mut emitter);
+            if let Some(heard) =
+                worker::emit_partial(&mut recognizer, &result, "replay", preview, &mut emitter)
+            {
+                decoded = heard;
+            }
         }
     }
     if let Some(segment) = segmenter.finish() {
@@ -379,8 +385,6 @@ pub async fn replay(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vad::VAD_CHUNK_SAMPLES;
-    use serde_json::json;
 
     fn loud_is_speech() -> SilenceMeter {
         SilenceMeter::new(|chunk| {
@@ -402,8 +406,8 @@ mod tests {
         for _ in 0..chunks {
             let chunk = vec![0.3; 1_600];
             segmenter.push(&chunk);
-            interim.observe(&segmenter, &chunk, |tick| {
-                steps.push((protocol::tick("s", tick), false));
+            interim.observe(&segmenter, &chunk, |tick, decoded| {
+                steps.push((protocol::tick("s", tick, decoded), false));
             });
             if previews.try_recv().is_ok() {
                 if let Some(step) = steps.last_mut() {
@@ -527,11 +531,7 @@ mod tests {
 
     #[test]
     fn a_session_without_a_silence_meter_still_offers_previews_and_sends_no_ticks() {
-        let (preview_tx, previews) = crossbeam_channel::bounded(1);
-        let mut interim = Interim {
-            ticker: Ticker::new(None),
-            previews: preview_tx,
-        };
+        let (mut interim, previews, _) = Interim::new(Ticker::new(None));
         let steps = hear_speech(&mut interim, &previews, 20);
         assert_eq!(steps.len(), 4, "the cadence still fires every 0.5 s");
         assert!(
@@ -548,17 +548,13 @@ mod tests {
 
     #[test]
     fn a_vad_failure_mid_session_stops_ticks_but_not_previews() {
-        let (preview_tx, previews) = crossbeam_channel::bounded(1);
         let mut chunks_seen = 0;
         let failing_after_one_second = SilenceMeter::new(move |_| {
             chunks_seen += 1;
             anyhow::ensure!(chunks_seen <= 31, "model failed");
             Ok(0.9)
         });
-        let mut interim = Interim {
-            ticker: Ticker::new(Some(failing_after_one_second)),
-            previews: preview_tx,
-        };
+        let (mut interim, previews, _) = Interim::new(Ticker::new(Some(failing_after_one_second)));
         let steps = hear_speech(&mut interim, &previews, 30);
         let ticked: Vec<_> = steps.iter().map(|(tick, _)| tick.is_some()).collect();
         assert_eq!(
@@ -569,71 +565,168 @@ mod tests {
         assert!(steps.iter().all(|(_, previewed)| *previewed));
     }
 
-    #[test]
-    fn every_cadence_tick_reports_silence_while_a_busy_worker_misses_previews() {
-        let (segment_tx, segment_rx) = crossbeam_channel::bounded(32);
-        let (preview_tx, preview_rx) = crossbeam_channel::bounded(1);
-        let mut interim = Interim {
-            ticker: Ticker::new(Some(loud_is_speech())),
-            previews: preview_tx,
-        };
-        let mut segmenter = Segmenter::default();
-        let mut dropped = 0;
-        let mut events = Vec::new();
-        for level in [0.3; 10].into_iter().chain([0.0; 10]) {
+    /// `speech_chunks` × 0.1 s of speech, then `silent_chunks` × 0.1 s of
+    /// silence, fed in 0.1 s chunks. Returns each tick as (audio_ms,
+    /// trailing_silence_ms, decoded_ms, preview requested).
+    fn hear_a_sentence_then_silence(
+        interim: &mut Interim,
+        segmenter: &mut Segmenter,
+        speech_chunks: usize,
+        silent_chunks: usize,
+    ) -> Vec<(u64, u64, u64, bool)> {
+        let mut ticks = Vec::new();
+        let levels =
+            std::iter::repeat_n(0.3, speech_chunks).chain(std::iter::repeat_n(0.0, silent_chunks));
+        for level in levels {
             let chunk = vec![level; 1_600];
-            enqueue_segments(&mut segmenter, &chunk, &segment_tx, &mut dropped);
-            interim.observe(&segmenter, &chunk, |tick| {
-                assert!(
-                    !events.is_empty() || preview_rx.is_empty(),
-                    "the first tick is reported before its preview is offered"
-                );
-                events.extend(protocol::tick("s", tick));
-            });
-        }
-        let speech_chunk_end = 16_000_usize.next_multiple_of(VAD_CHUNK_SAMPLES);
-        let whole_chunks = |received: usize| received - received % VAD_CHUNK_SAMPLES;
-        let silence_ms =
-            |received: usize| protocol::samples_to_ms(whole_chunks(received) - speech_chunk_end);
-        let reported: Vec<_> = events
-            .iter()
-            .map(|event| {
+            segmenter.push(&chunk);
+            interim.observe(segmenter, &chunk, |tick, decoded| {
+                let event = protocol::tick("s", tick, decoded).unwrap();
                 assert_eq!(event["type"], "tick");
                 assert_eq!(event["session_id"], "s");
-                (
-                    event["audio_ms"].clone(),
-                    event["trailing_silence_ms"].clone(),
-                )
-            })
-            .collect();
+                ticks.push((
+                    event["audio_ms"].as_u64().unwrap(),
+                    event["trailing_silence_ms"].as_u64().unwrap(),
+                    event["decoded_ms"].as_u64().unwrap(),
+                    tick.preview,
+                ));
+            });
+        }
+        ticks
+    }
+
+    #[test]
+    fn a_pause_is_reported_as_it_happens_not_on_the_next_cadence_tick() {
+        let (mut interim, _previews, _) = Interim::new(Ticker::new(Some(loud_is_speech())));
+        let mut segmenter = Segmenter::default();
+        let ticks = hear_a_sentence_then_silence(&mut interim, &mut segmenter, 12, 8);
+        // 1.2 s of speech fills the VAD chunks up to 19 456 samples; silence is
+        // counted in whole chunks after that, as each 0.1 s of audio arrives.
         assert_eq!(
-            reported,
+            ticks,
             [
-                (500, 0),
-                (1_000, 0),
-                (1_500, silence_ms(24_000)),
-                (2_000, silence_ms(32_000))
+                (500, 0, 0, true),
+                (1_000, 0, 0, true),
+                // The pause is 0.16 s old and the last preview 0.4 s old, so
+                // the words since then are decoded now. Before this change the
+                // pause was first reported, and decoded, at 1 500 ms.
+                (1_400, 160, 0, true),
+                (1_500, 256, 0, false),
+                (1_600, 384, 0, false),
+                (1_700, 480, 0, false),
+                (1_800, 576, 0, false),
+                // The cadence restarted at the pause preview, so its next one
+                // is 0.5 s after that.
+                (1_900, 672, 0, true),
+                (2_000, 768, 0, false),
             ]
-            .map(|(audio, silence)| (json!(audio), json!(silence)))
         );
+    }
+
+    #[test]
+    fn a_pause_right_after_a_preview_does_not_take_another() {
+        let (mut interim, _previews, _) = Interim::new(Ticker::new(Some(loud_is_speech())));
+        let mut segmenter = Segmenter::default();
+        let ticks = hear_a_sentence_then_silence(&mut interim, &mut segmenter, 10, 5);
+        assert_eq!(
+            ticks,
+            [
+                (500, 0, 0, true),
+                (1_000, 0, 0, true),
+                // The preview at 1 000 ms is 0.2 s old and heard all but the
+                // last 24 ms of speech: the pause is reported, not decoded.
+                (1_200, 160, 0, false),
+                (1_300, 256, 0, false),
+                (1_400, 352, 0, false),
+                (1_500, 448, 0, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn pause_ticks_stop_after_the_window_and_the_cadence_carries_on() {
+        let (mut interim, _previews, _) = Interim::new(Ticker::new(Some(loud_is_speech())));
+        let mut segmenter = Segmenter::default();
+        let ticks = hear_a_sentence_then_silence(&mut interim, &mut segmenter, 10, 40);
+        let after_window: Vec<_> = ticks
+            .iter()
+            .filter(|(_, silence, _, _)| *silence > 1_600)
+            .collect();
+        assert!(after_window.len() >= 4, "{ticks:?}");
+        assert!(
+            after_window.iter().all(|(_, _, _, preview)| *preview),
+            "past the window only cadence ticks remain: {after_window:?}"
+        );
+        assert!(
+            after_window
+                .windows(2)
+                .all(|pair| pair[1].0 - pair[0].0 == 500),
+            "and they are 0.5 s apart: {after_window:?}"
+        );
+    }
+
+    #[test]
+    fn silence_before_the_first_word_is_not_a_pause() {
+        let (mut interim, _previews, _) = Interim::new(Ticker::new(Some(loud_is_speech())));
+        let mut segmenter = Segmenter::default();
+        let mut ticks = Vec::new();
+        for _ in 0..20 {
+            let chunk = vec![0.0; 1_600];
+            segmenter.push(&chunk);
+            interim.observe(&segmenter, &chunk, |tick, _| {
+                ticks.push(protocol::samples_to_ms(tick.audio_samples))
+            });
+        }
+        assert_eq!(ticks, [500, 1_000, 1_500, 2_000], "cadence ticks only");
+    }
+
+    #[test]
+    fn ticks_report_the_audio_the_newest_finished_decode_heard() {
+        let (mut interim, _previews, decoded) = Interim::new(Ticker::new(Some(loud_is_speech())));
+        let mut segmenter = Segmenter::default();
+        decoded.store(12_000, Ordering::SeqCst);
+        let ticks = hear_a_sentence_then_silence(&mut interim, &mut segmenter, 10, 0);
+        assert_eq!(ticks, [(500, 0, 750, true), (1_000, 0, 750, true)]);
+    }
+
+    #[test]
+    fn a_busy_worker_finds_the_newest_preview_waiting_not_the_oldest() {
+        let (segment_tx, segment_rx) = crossbeam_channel::bounded(32);
+        let (mut interim, preview_rx, _) = Interim::new(Ticker::new(Some(loud_is_speech())));
+        let mut segmenter = Segmenter::default();
+        let mut dropped = 0;
+        let mut ticks = 0;
+        for _ in 0..20 {
+            let chunk = vec![0.3; 1_600];
+            enqueue_segments(&mut segmenter, &chunk, &segment_tx, &mut dropped);
+            interim.observe(&segmenter, &chunk, |_, _| {
+                assert!(
+                    ticks > 0 || preview_rx.is_empty(),
+                    "the first tick is reported before its preview is offered"
+                );
+                ticks += 1;
+            });
+        }
+        assert_eq!(ticks, 4, "every cadence tick is reported");
         let preview = preview_rx.recv().unwrap();
         assert!(
             preview_rx.try_recv().is_err(),
-            "the worker never drained the slot, so later previews were skipped"
+            "one slot: the worker never has a backlog of stale previews"
         );
         assert!(!preview.truncated);
-        // The first tick fires on the chunk that crosses the interval: 5 × 1600
-        // samples, plus the silent run-out every preview carries.
+        // The worker never drained the slot, so each later preview replaced
+        // the one waiting. The last covers all 2 s, plus the silent run-out
+        // every preview carries.
+        assert_eq!(preview.audio_samples, 20 * 1_600);
         assert_eq!(
             preview.segment.owned_end - preview.segment.owned_start,
-            5 * 1_600 + crate::segments::PREVIEW_TAIL_SILENCE_SAMPLES
+            20 * 1_600 + crate::segments::PREVIEW_TAIL_SILENCE_SAMPLES
         );
-        assert_eq!(preview.audio_samples, 5 * 1_600);
         assert!(
             segment_rx.try_recv().is_err(),
             "no committed segment below one core span"
         );
-        assert_eq!(dropped, 0, "a full preview slot is never loss");
+        assert_eq!(dropped, 0, "a replaced preview is never loss");
     }
 
     #[test]

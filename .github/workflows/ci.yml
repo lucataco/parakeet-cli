@@ -17,7 +17,7 @@ concurrency:
 jobs:
   macos:
     name: fmt, clippy, test, build
-    runs-on: macos-14
+    runs-on: macos-26
     env:
       CARGO_TERM_COLOR: always
 

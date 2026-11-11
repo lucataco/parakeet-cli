@@ -48,6 +48,12 @@ impl SilenceMeter {
     pub fn trailing_samples(&self) -> usize {
         self.classified - self.speech_end
     }
+
+    /// Whether any chunk so far was speech. Until one is, the trailing silence
+    /// is the lead-in to the first word, not a pause after one.
+    pub fn heard_speech(&self) -> bool {
+        self.speech_end > 0
+    }
 }
 
 #[cfg(test)]

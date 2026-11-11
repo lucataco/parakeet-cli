@@ -22,6 +22,23 @@ pub const PREVIEW_MAX_OWNED_SAMPLES: usize = 16_000 * 15;
 /// does not substitute. More than 0.3 s after a clean cut gives no further
 /// benefit and can hallucinate.
 pub const PREVIEW_TAIL_SILENCE_SAMPLES: usize = 4_800;
+/// Trailing silence at which a pause gets a tick of its own (0.128 s, four VAD
+/// chunks), with a fresh preview. A client acts once a sentence has ended in
+/// about 0.3 s of silence; decoding the words before the pause this early
+/// means their text is ready by then, instead of up to 0.5 s later at the next
+/// cadence tick.
+pub const PAUSE_TICK_SILENCE_SAMPLES: usize = 2_048;
+/// While a pause lasts, how much more silence each further tick reports
+/// (0.064 s, two VAD chunks), so a client's own silence threshold is met within
+/// one step of being crossed.
+pub const PAUSE_TICK_INTERVAL_SAMPLES: usize = 1_024;
+/// Pause ticks stop after this much silence (1.6 s); the cadence ticks go on.
+/// A microphone left open between commands is silent for minutes.
+pub const PAUSE_TICK_WINDOW_SAMPLES: usize = 25_600;
+/// Audio that must have arrived since the last preview before a pause takes
+/// another (0.25 s). Short gaps between words reach the pause threshold too,
+/// and this keeps them from adding more than four decodes a second.
+pub const PAUSE_PREVIEW_MIN_GAP_SAMPLES: usize = 4_000;
 /// Samples below this amplitude are trailing room tone, not speech. Through-air
 /// MacBook rest is ~0.002 peak; voiced speech on that path is typically >0.05.
 const TRAILING_ROOM_TONE: f32 = 0.01;
@@ -156,14 +173,68 @@ impl PreviewCadence {
     }
 }
 
+impl PreviewCadence {
+    /// A preview was just taken off-cadence, so the next one is a full interval away.
+    fn restart(&mut self) {
+        self.since_last = 0;
+    }
+
+    /// Whether enough audio has arrived since the last preview for a pause to take one.
+    fn allows_pause_preview(&self) -> bool {
+        self.since_last >= PAUSE_PREVIEW_MIN_GAP_SAMPLES
+    }
+}
+
+/// Decides when a pause in speech deserves a tick of its own, between cadence
+/// ticks. Counts trailing silence in samples, like `PreviewCadence`.
+#[derive(Debug, Default)]
+pub struct PauseCadence {
+    /// Trailing silence the last pause tick reported; zero while speech goes on.
+    reported: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseTick {
+    /// The pause just reached `PAUSE_TICK_SILENCE_SAMPLES`.
+    Began,
+    /// The same pause grew by another `PAUSE_TICK_INTERVAL_SAMPLES`.
+    Continues,
+}
+
+impl PauseCadence {
+    pub fn observe(&mut self, trailing_silence: usize) -> Option<PauseTick> {
+        if trailing_silence < PAUSE_TICK_SILENCE_SAMPLES {
+            self.reported = 0;
+            return None;
+        }
+        if trailing_silence > PAUSE_TICK_WINDOW_SAMPLES {
+            return None;
+        }
+        if self.reported == 0 {
+            self.reported = trailing_silence;
+            return Some(PauseTick::Began);
+        }
+        if trailing_silence >= self.reported + PAUSE_TICK_INTERVAL_SAMPLES {
+            self.reported = trailing_silence;
+            return Some(PauseTick::Continues);
+        }
+        None
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Tick {
     pub audio_samples: usize,
     pub trailing_silence_samples: Option<usize>,
+    /// Whether an interim preview should be decoded now. Every cadence tick
+    /// asks for one, and so does the tick that opens a pause, because the words
+    /// just before the pause are the ones no preview has heard yet.
+    pub preview: bool,
 }
 
 pub struct Ticker {
     cadence: PreviewCadence,
+    pause: PauseCadence,
     silence: Option<SilenceMeter>,
 }
 
@@ -171,6 +242,7 @@ impl Ticker {
     pub fn new(silence: Option<SilenceMeter>) -> Self {
         Self {
             cadence: PreviewCadence::default(),
+            pause: PauseCadence::default(),
             silence,
         }
     }
@@ -180,12 +252,29 @@ impl Ticker {
             eprintln!("Silence VAD failed; no more ticks this session: {error:#}");
             self.silence = None;
         }
-        self.cadence
-            .observe(samples.len(), segmenter.owned_pending())
-            .then(|| Tick {
-                audio_samples: segmenter.received,
-                trailing_silence_samples: self.silence.as_ref().map(SilenceMeter::trailing_samples),
-            })
+        let pending = segmenter.owned_pending();
+        let on_cadence = self.cadence.observe(samples.len(), pending);
+        // Silence before the first word is not a pause; it has no sentence to end.
+        let pause = self
+            .silence
+            .as_ref()
+            .filter(|silence| silence.heard_speech())
+            .and_then(|silence| self.pause.observe(silence.trailing_samples()));
+        if !on_cadence && pause.is_none() {
+            return None;
+        }
+        let preview = on_cadence
+            || (pause == Some(PauseTick::Began)
+                && pending >= PREVIEW_MIN_SAMPLES
+                && self.cadence.allows_pause_preview());
+        if preview {
+            self.cadence.restart();
+        }
+        Some(Tick {
+            audio_samples: segmenter.received,
+            trailing_silence_samples: self.silence.as_ref().map(SilenceMeter::trailing_samples),
+            preview,
+        })
     }
 }
 

@@ -172,16 +172,22 @@ impl ParakeetModel {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// Tests run in parallel and the clock ticks in microseconds here, so two
+    /// of them could draw the same timestamp and share a directory. The
+    /// counter keeps each test's directory its own.
     fn temp_model_dir() -> PathBuf {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "parakeet-model-selection-{}-{unique}",
-            std::process::id()
+            "parakeet-model-selection-{}-{unique}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ))
     }
 
