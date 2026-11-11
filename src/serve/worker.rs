@@ -67,7 +67,13 @@ pub(super) fn run(mut recognizer: Recognizer, jobs: Receiver<Job>, state: State,
                     // Interim text only while still recording; after stop or
                     // cancel every cycle belongs to the final transcript.
                     if job.control.load(Ordering::SeqCst) == RUN {
-                        emit_partial(&mut recognizer, &result, &job.id, preview, &mut partials);
+                        if let Some(heard) =
+                            emit_partial(&mut recognizer, &result, &job.id, preview, &mut partials)
+                        {
+                            // After the partial is written, so a tick that
+                            // reports this audio always follows its text.
+                            job.decoded.fetch_max(heard, Ordering::SeqCst);
+                        }
                     }
                 }
                 Event::PreviewsClosed => previews_open = false,
@@ -101,23 +107,25 @@ pub(super) fn run(mut recognizer: Recognizer, jobs: Receiver<Job>, state: State,
 }
 
 /// Decodes the committed tokens plus the preview's tokens into one running
-/// text. The session's own token list is left untouched.
+/// text. The session's own token list is left untouched. Returns the session
+/// audio the decode heard, whether or not the text changed, or `None` when the
+/// decode failed.
 pub(super) fn emit_partial(
     recognizer: &mut Recognizer,
     result: &SessionResult,
     session_id: &str,
     preview: Preview,
     partials: &mut protocol::PartialEmitter,
-) {
+) -> Option<usize> {
     let truncated = preview.truncated;
-    let audio_ms = protocol::samples_to_ms(preview.audio_samples);
-    let Some(tokens) = recognizer.preview(preview.segment) else {
-        return;
-    };
+    let heard = preview.audio_samples;
+    let tokens = recognizer.preview(preview.segment)?;
     let mut running = result.tokens.clone();
     running.extend(tokens);
     let text = recognizer.decode(&running);
+    let audio_ms = protocol::samples_to_ms(heard);
     if let Some(event) = partials.next(session_id, text, truncated, audio_ms) {
         protocol::emit(event);
     }
+    Some(heard)
 }

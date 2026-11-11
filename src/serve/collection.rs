@@ -6,13 +6,13 @@ use crate::{
     vad::{SileroVad, VAD_CHUNK_SAMPLES, VadEvent, VadSegmenter},
 };
 use anyhow::Result;
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, TrySendError};
 use std::{
     collections::VecDeque,
     path::Path,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -122,16 +122,47 @@ pub(super) fn enqueue_segment(segment: Segment, tx: &Sender<Collected>, dropped:
 pub(super) struct Interim {
     pub ticker: Ticker,
     pub previews: Sender<Preview>,
+    /// The worker's end of `previews`, kept to take back a preview the worker
+    /// has not started, so the slot always holds the newest one.
+    pub queued: Receiver<Preview>,
+    /// Session audio the newest finished preview decode had heard; the worker
+    /// stores it, every tick reports it.
+    pub decoded: Arc<AtomicUsize>,
 }
 
 impl Interim {
-    pub fn observe(&mut self, segmenter: &Segmenter, samples: &[f32], report: impl FnOnce(Tick)) {
+    pub fn new(ticker: Ticker) -> (Self, Receiver<Preview>, Arc<AtomicUsize>) {
+        let (previews, queued) = crossbeam_channel::bounded(1);
+        let decoded = Arc::new(AtomicUsize::new(0));
+        let interim = Self {
+            ticker,
+            previews,
+            queued: queued.clone(),
+            decoded: decoded.clone(),
+        };
+        (interim, queued, decoded)
+    }
+
+    pub fn observe(
+        &mut self,
+        segmenter: &Segmenter,
+        samples: &[f32],
+        report: impl FnOnce(Tick, usize),
+    ) {
         let Some(tick) = self.ticker.observe(segmenter, samples) else {
             return;
         };
-        report(tick);
+        report(tick, self.decoded.load(Ordering::SeqCst));
+        if !tick.preview {
+            return;
+        }
         if let Some(preview) = segmenter.preview(PREVIEW_MAX_OWNED_SAMPLES) {
-            let _ = self.previews.try_send(preview);
+            if let Err(TrySendError::Full(newest)) = self.previews.try_send(preview) {
+                // The worker is still on an earlier decode. The preview waiting
+                // behind it is older than this one, so this one takes its place.
+                let _ = self.queued.try_recv();
+                let _ = self.previews.try_send(newest);
+            }
         }
     }
 }
@@ -192,8 +223,8 @@ fn record(capture: &Capture, attach: Attach, preroll: Vec<f32>) -> bool {
     let dropped_before = capture.stats.dropped.load(Ordering::Relaxed);
     let mut error = None;
     let capture_start = std::time::Instant::now();
-    let emit_tick = |tick| {
-        if let Some(event) = protocol::tick(&job_id, tick) {
+    let emit_tick = |tick, decoded| {
+        if let Some(event) = protocol::tick(&job_id, tick, decoded) {
             protocol::emit(event);
         }
     };

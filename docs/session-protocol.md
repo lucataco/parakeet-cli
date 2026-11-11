@@ -77,9 +77,11 @@ change or disappear in the next one.
 - Partials stop as soon as `stop` or `cancel` is received; `transcribing` and
   `complete` follow as before. All three event kinds are written by the same
   thread, so a `partial` can never arrive after its session's `complete`.
-- Previews travel on a separate single-slot queue and are skipped, never
-  queued, when the recognizer is busy. They cannot displace a committed segment
-  and are never counted in `dropped_samples` or `failed_segments`.
+- Previews travel on a separate single-slot queue. When the recognizer is busy
+  the slot holds the newest preview offered (v0.1.13; earlier engines kept the
+  oldest), so the decode that follows is never of stale audio. Previews cannot
+  displace a committed segment and are never counted in `dropped_samples` or
+  `failed_segments`.
 
 Cost: each partial re-encodes the uncommitted tail (about 30 ms plus 14 ms per
 second of audio on Apple Silicon CPU), so a 10 s utterance costs ~150 ms per
@@ -98,8 +100,34 @@ preview-cadence tick, whether or not the text changed, and even when the worker
 is busy and skips that tick's preview:
 
 ```json
-{"type":"tick","session_id":"…","audio_ms":6120,"trailing_silence_ms":740}
+{"type":"tick","session_id":"…","audio_ms":6120,"trailing_silence_ms":740,"decoded_ms":5610}
 ```
+
+Since v0.1.13 a pause also sends ticks of its own, between cadence ticks:
+
+- One tick the moment the silence after speech reaches 128 ms. If at least
+  0.25 s of audio has arrived since the last preview, this tick takes one, so
+  the words just before the pause are decoded now instead of at the next
+  cadence tick, and the 0.5 s cadence restarts from it. A pause that follows a
+  preview more closely is reported without another decode.
+- One more for every further 64 ms of that silence, up to 1.6 s. These carry
+  no preview. After 1.6 s only cadence ticks remain, so an open microphone that
+  hears nothing sends two ticks a second, as before.
+- Silence before the first word of a session is not a pause and sends none.
+
+A client that acts once a sentence has ended in 300 ms of silence, or ends an
+utterance at 900 ms, therefore hears about it within 64 ms of the threshold
+instead of up to 500 ms later, and the decode started at 128 ms has usually
+finished by then.
+
+`decoded_ms` (v0.1.13) is the `audio_ms` of the newest preview decode that has
+finished, whether or not its text differed from the previous partial, and 0
+before the first. The latest `partial` is the text of everything said so far
+once `decoded_ms` reaches the end of the speech, `audio_ms -
+trailing_silence_ms`. Until then the last words may be missing from it, and a
+client that acts on the text should wait for a later tick. Allow about two
+chunks (64 ms) of slack: the end of speech is rounded up to a chunk boundary. A
+tick that reports a decode is always written after that decode's `partial`.
 
 - `audio_ms` means what it means on `partial`: how much of the recording had
   arrived when the tick was taken. The partial decoded at that moment carries
@@ -127,8 +155,9 @@ is busy and skips that tick's preview:
 - A client must keep a fallback for a session that sends no ticks or whose ticks
   stop, for example the timer it would use with an engine that predates ticks.
 - `capture` sessions and sessions without `partials` never receive ticks.
-  Engines up to v0.1.11 never send them. Clients that ignore unknown event
-  types need no change, and `protocol_version` stays 2.
+  Engines up to v0.1.11 never send them, and v0.1.12 sends cadence ticks only,
+  without `decoded_ms`. Clients that ignore unknown event types and fields need
+  no change, and `protocol_version` stays 2.
 
 Cost: `start` loads the session's Silero instance (about 17 ms on Apple Silicon)
 and each 32 ms chunk costs about 60 µs of CPU, under 0.2% of one core.
